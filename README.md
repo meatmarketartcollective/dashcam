@@ -1,34 +1,68 @@
 # mayday
 
-A local flight recorder for agent sessions.
+A vendor-neutral local flight recorder for AI agent sessions. mayday sits
+beside any agent harness and passively records what the agent actually did:
+the model API boundary, the tool calls, the file changes. Then it replays any
+session hop by hop, showing the state at each step, so a run that went wrong
+can be understood after the fact.
 
-Agent frameworks are huge and their issue trackers are drowning, and underneath
-most reports is the same complaint: an agent did something wrong and nobody can
-say what it actually saw, decided, or did. Mayday is a local daemon that sits
-beside any agent session and records every tool call, prompt, file diff and
-model turn into one queryable timeline, then replays a failed run step by step
-with the state at each hop.
+Nothing leaves the machine. The timeline is an encrypted SQLite database
+(AES-256-GCM, app-managed key, no user credentials), the proxy and the
+viewer bind to 127.0.0.1 only, and secrets are redacted before anything is
+written. Headers are never recorded at all.
 
-Vendor-neutral by design: it records whatever harness you point it at.
+## Quick start
 
-## Design
+Record a session by pointing the harness's API base URL at the proxy:
 
-- Capture happens at three boundaries, none of which require touching the
-  agent's code:
-  1. the model API boundary (a localhost proxy that copies requests and
-     responses as they pass),
-  2. tool execution (hook/wrapper shims that emit a record per call),
-  3. the working tree (file diffs between turns).
-- Storage is a single SQLite database, one row per event, sessions as the top
-  grouping. Fully local; no phone-home.
-- The replay UI walks a session turn by turn and answers one question:
-  why did it do that.
+    mayday record --upstream https://api.openai.com --note "my agent, task X"
 
-## Status
+The proxy forwards to the real provider, records both directions as one hop
+per turn, and derives tool-call hops from the responses. Streaming
+(text/event-stream) responses pass through chunk by chunk and still land as
+one complete hop.
 
-MVP scaffold. The timeline store (SQLite, sessions + events) and CLI surface
-exist and are tested; capture transports and the replay UI are next.
+Read the timeline:
 
-## License
+    mayday timeline                      # sessions and hop counts
+    mayday replay --session 1            # every hop, oldest first
+    mayday replay --session 1 --interactive   # step through, state at each hop
+    mayday serve --port 8098             # browse in a local web page
 
-MIT
+Record file changes at the file boundary:
+
+    mayday diff src/main.rs --session 1
+
+## How it keeps itself safe
+
+- **Redaction always on.** Token-shaped secrets (sk-, Bearer, nvapi-) are
+  scrubbed at write time. Extra rules with `--rules file` add to the
+  built-ins; they never weaken them.
+- **Headers are never stored**, so API keys have nowhere to land.
+- **Retention.** `--max-events` (count), `--max-age-days` (age),
+  `--max-size` (stored bytes). Oldest go first, and emptied sessions go
+  with them.
+- **Export before aging out.** `--export file` makes retention append every
+  aged-out hop to that file as readable JSONL first; `mayday export
+  --session 1` does the same for a whole session on demand.
+
+## Scan it from an agent
+
+`mayday mcp` speaks the Model Context Protocol on stdio, read-only, local
+only. Point an MCP client at the binary and it can list sessions, walk
+hops, search the timeline, pull any hop or file diff, and summarize a
+session: list_sessions, list_hops, search_timeline, get_hop, get_diff,
+summarize_session.
+
+## Multi-agent traces
+
+A harness that stamps an `X-Mayday-Agent` header on its API calls gets that
+identity recorded on every hop, so one timeline can show which agent did
+what.
+
+## Build
+
+    cargo build && cargo test
+
+Rust, no runtime dependencies beyond SQLite (bundled). See
+docs/architecture.md for the design.
