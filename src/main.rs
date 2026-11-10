@@ -38,6 +38,9 @@ enum Command {
         /// Drop events from sessions older than this many days
         #[arg(long)]
         max_age_days: Option<i64>,
+        /// Extra redaction rules, one regex per line; built-ins always on
+        #[arg(short, long)]
+        rules: Option<PathBuf>,
     },
     /// Apply retention now: keep the newest history, prune the rest
     Prune {
@@ -86,7 +89,7 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { port, upstream, note, max_events, max_age_days } => {
+        Command::Record { port, upstream, note, max_events, max_age_days, rules } => {
             let store = Arc::new(open_store(&db_path));
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
@@ -95,9 +98,13 @@ fn main() {
             );
             let running = Arc::new(AtomicBool::new(true));
             let retention = RetentionPolicy { max_events, max_age_days };
+            let redactor = match &rules {
+                Some(path) => mayday::redact::Redactor::load(path),
+                None => mayday::redact::Redactor::builtin(),
+            };
             if let Err(e) = capture::serve(
                 store,
-                capture::ProxyConfig { port, upstream, session: id, retention: Some(retention) },
+                capture::ProxyConfig { port, upstream, session: id, retention: Some(retention), redactor },
                 running,
             ) {
                 eprintln!("capture stopped: {e}");

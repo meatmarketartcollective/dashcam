@@ -19,6 +19,24 @@ fn wait_port(port: u16) {
     panic!("proxy port {port} never came up");
 }
 
+/// The proxy writes its hop after the response is on the wire, so a test that
+/// reads the timeline the instant the client saw EOF can beat it. Poll until
+/// the expected number of hops lands (or fail loudly).
+fn wait_events(store: &Store, session: i64, want: usize) -> Vec<mayday::event::Event> {
+    for _ in 0..500 {
+        let events = store.events(session).unwrap();
+        if events.len() >= want {
+            return events;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let events = store.events(session).unwrap();
+    panic!(
+        "timeline never reached {want} hops (has {})",
+        events.len()
+    );
+}
+
 const K: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 /// A minimal upstream provider stub: answers every POST with an echo JSON body.
@@ -31,9 +49,31 @@ fn spawn_upstream() -> u16 {
                 Ok(s) => s,
                 Err(_) => break,
             };
+            // headers may arrive before the body; read until Content-Length
+            // is satisfied so the echo always carries the full body
+            let mut buf = Vec::new();
             let mut chunk = [0u8; 8192];
-            let n = stream.read(&mut chunk).unwrap_or(0);
-            let text = String::from_utf8_lossy(&chunk[..n]).to_string();
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let len: usize = text
+                    .lines()
+                    .find(|l| l.to_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim().parse().ok())
+                    .unwrap_or(0);
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    if buf.len() - head_end - 4 >= len {
+                        break;
+                    }
+                } else if len == 0 && buf.len() >= 4 {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
             let req_body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
             let auth = text
                 .lines()
@@ -98,6 +138,7 @@ fn streaming_responses_are_captured_intact() {
         upstream: format!("http://127.0.0.1:{port}"),
         session,
         retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();
@@ -115,8 +156,8 @@ fn streaming_responses_are_captured_intact() {
     assert!(text.contains("step one"));
     assert!(text.contains("step two"));
 
+    let events = wait_events(&store, session, 1);
     running.store(false, Ordering::Relaxed);
-    let events = store.events(session).unwrap();
     assert_eq!(events.len(), 1);
     assert!(events[0].payload.contains("step one"));
     assert!(events[0].payload.contains("step two"));
@@ -151,6 +192,7 @@ fn proxied_turns_land_in_the_timeline() {
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
         retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();
@@ -179,10 +221,10 @@ fn proxied_turns_land_in_the_timeline() {
 
     running.store(false, Ordering::Relaxed);
 
-    let events = store.events(session).unwrap();
+    let events = wait_events(&store, session, 2);
+    running.store(false, Ordering::Relaxed);
     assert_eq!(events.len(), 2);
     let first = &events[0];
-    eprintln!("DEBUG summary={:?} kind={:?} head={:.80}", first.summary, first.kind, first.payload);
     assert_eq!(first.kind, mayday::event::EventKind::ModelTurn);
     assert!(first.summary.contains("POST /v1/chat/completions"));
     assert!(first.payload.contains("why did you do that"));
@@ -242,6 +284,7 @@ fn sse_turns_stream_through_and_record_assembled() {
                 upstream: format!("http://127.0.0.1:{up}"),
                 session: s,
                 retention: None,
+                redactor: mayday::redact::Redactor::builtin(),
             },
             running,
         );
@@ -262,7 +305,7 @@ fn sse_turns_stream_through_and_record_assembled() {
     }
 
     // and the timeline still records ONE hop with the assembled body
-    let events = store.events(s).unwrap();
+    let events = wait_events(&store, s, 1);
     assert_eq!(events.len(), 1);
     assert!(events[0].payload.contains("alpha"));
     assert!(events[0].payload.contains("gamma"));
@@ -314,6 +357,7 @@ fn tool_calls_are_derived_from_recorded_turns() {
         upstream: format!("http://127.0.0.1:{port}"),
         session,
         retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();

@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod derive;
+pub mod redact;
 pub mod crypto;
 pub mod event;
 pub mod key;

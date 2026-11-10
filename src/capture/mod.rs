@@ -10,6 +10,9 @@ pub struct ProxyConfig {
     pub session: i64,
     /// Applied after every recorded hop when set.
     pub retention: Option<crate::store::RetentionPolicy>,
+    /// Redaction applied at write time; built-ins always on, a rules file
+    /// (via `--rules`) may add more.
+    pub redactor: crate::redact::Redactor,
 }
 
 /// Record one model turn hop, then derive tool_call hops from its response.
@@ -31,9 +34,9 @@ fn record_turn(
     let mut payload = serde_json::json!({
         "method": method,
         "path": path,
-        "request_body": scrub(request_body),
+        "request_body": cfg.redactor.scrub(request_body),
         "status": status,
-        "response_body": scrub(response_body),
+        "response_body": cfg.redactor.scrub(response_body),
     });
     if streamed {
         payload["streamed"] = serde_json::Value::Bool(true);
@@ -51,7 +54,7 @@ fn record_turn(
         let tc_payload = serde_json::json!({
             "tool": tc.name,
             "call_id": tc.id,
-            "arguments": scrub(&tc.arguments),
+            "arguments": cfg.redactor.scrub(&tc.arguments),
             "from_hop": turn_seq,
         })
         .to_string();
@@ -165,7 +168,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 let payload = serde_json::json!({
                     "method": method,
                     "path": path,
-                    "request_body": scrub(&String::from_utf8_lossy(&body)),
+                    "request_body": cfg.redactor.scrub(&String::from_utf8_lossy(&body)),
                     "status": 502,
                     "response_body": &msg,
                 })
