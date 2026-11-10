@@ -12,6 +12,62 @@ pub struct ProxyConfig {
     pub retention: Option<crate::store::RetentionPolicy>,
 }
 
+/// Record one model turn hop, then derive tool_call hops from its response.
+///
+/// A model turn that carries tool calls gets one extra hop per call, written
+/// right after the turn so the timeline order matches the run's execution
+/// order. Arguments are scrubbed like every other recorded body, and each
+/// derived hop links back to the turn that produced it.
+fn record_turn(
+    store: &std::sync::Arc<crate::store::Store>,
+    cfg: &ProxyConfig,
+    method: &str,
+    path: &str,
+    status: u16,
+    request_body: &str,
+    response_body: &str,
+    streamed: bool,
+) {
+    let mut payload = serde_json::json!({
+        "method": method,
+        "path": path,
+        "request_body": scrub(request_body),
+        "status": status,
+        "response_body": scrub(response_body),
+    });
+    if streamed {
+        payload["streamed"] = serde_json::Value::Bool(true);
+    }
+    let payload = payload.to_string();
+    let summary = if streamed {
+        format!("{method} /{path} -> {status} (streamed)")
+    } else {
+        format!("{method} /{path} -> {status}")
+    };
+    let turn_seq = store
+        .append_get_seq(cfg.session, EventKind::ModelTurn, &summary, &payload)
+        .unwrap_or(0);
+    for tc in crate::derive::tool_calls_from_response(response_body, streamed) {
+        let tc_payload = serde_json::json!({
+            "tool": tc.name,
+            "call_id": tc.id,
+            "arguments": scrub(&tc.arguments),
+            "from_hop": turn_seq,
+        })
+        .to_string();
+        let tc_summary = format!("tool_call {}", tc.name);
+        let _ = store.append(
+            cfg.session,
+            EventKind::ToolCall,
+            &tc_summary,
+            &tc_payload,
+        );
+    }
+    if let Some(policy) = &cfg.retention {
+        let _ = store.prune(policy);
+    }
+}
+
 /// Forward every request to the upstream provider and record both directions
 /// as one model_turn event per exchange.
 ///
@@ -71,36 +127,29 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                     );
                     let _ = rq.respond(response);
                     let captured = acc.lock().expect("stream buffer").clone();
-                    let payload = serde_json::json!({
-                        "method": method,
-                        "path": path,
-                        "request_body": scrub(&String::from_utf8_lossy(&body)),
-                        "status": status,
-                        "response_body": scrub(&String::from_utf8_lossy(&captured)),
-                        "streamed": true,
-                    })
-                    .to_string();
-                    let summary = format!("{method} /{path} -> {status} (streamed)");
-                    let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
-                    if let Some(policy) = &cfg.retention {
-                        let _ = store.prune(policy);
-                    }
+                    record_turn(
+                        &store,
+                        &cfg,
+                        &method,
+                        &path,
+                        status,
+                        &String::from_utf8_lossy(&body),
+                        &String::from_utf8_lossy(&captured),
+                        true,
+                    );
                 } else {
                     let mut resp_body = Vec::new();
                     let _ = resp.into_reader().read_to_end(&mut resp_body);
-                    let payload = serde_json::json!({
-                        "method": method,
-                        "path": path,
-                        "request_body": scrub(&String::from_utf8_lossy(&body)),
-                        "status": status,
-                        "response_body": scrub(&String::from_utf8_lossy(&resp_body)),
-                    })
-                    .to_string();
-                    let summary = format!("{method} /{path} -> {status}");
-                    let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
-                    if let Some(policy) = &cfg.retention {
-                        let _ = store.prune(policy);
-                    }
+                    record_turn(
+                        &store,
+                        &cfg,
+                        &method,
+                        &path,
+                        status,
+                        &String::from_utf8_lossy(&body),
+                        &String::from_utf8_lossy(&resp_body),
+                        false,
+                    );
                     let response = tiny_http::Response::from_data(resp_body)
                         .with_status_code(status)
                         .with_header(tiny_http::Header::from_bytes(

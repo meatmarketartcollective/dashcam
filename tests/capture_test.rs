@@ -269,3 +269,92 @@ fn sse_turns_stream_through_and_record_assembled() {
     assert!(events[0].payload.contains("\"streamed\":true"));
     assert!(events[0].summary.contains("streamed"));
 }
+
+/// An upstream that answers every request with a canned tool_calls JSON body
+/// whose arguments carry a secret: the derived tool_call hops must appear in
+/// the timeline, ordered after the turn, scrubbed like every other body.
+#[test]
+fn tool_calls_are_derived_from_recorded_turns() {
+    let tool_body = r#"{"choices":[{"message":{"role":"assistant","tool_calls":[
+        {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Tokyo\",\"key\":\"sk-secret123456789012\"}"}},
+        {"id":"call_2","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"/tmp/x\"}"}}
+    ]}}]}"#;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut chunk = [0u8; 8192];
+            let _ = stream.read(&mut chunk);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                tool_body.len(),
+                tool_body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("t.db");
+    let store = Arc::new(Store::open(&db_path, Some(K)).unwrap());
+    let session = store.new_session(Some("tool-call harness")).unwrap();
+
+    let listener2 = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = listener2.local_addr().unwrap().port();
+    drop(listener2);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let cfg = ProxyConfig {
+        port: proxy_port,
+        upstream: format!("http://127.0.0.1:{port}"),
+        session,
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+    };
+    let s2 = store.clone();
+    let r2 = running.clone();
+    thread::spawn(move || {
+        let _ = capture::serve(s2, cfg, r2);
+    });
+    wait_port(proxy_port);
+
+    let resp = ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
+        .set("Content-Type", "application/json")
+        .send_string("{}")
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    running.store(false, Ordering::Relaxed);
+
+    let events = store.events(session).unwrap();
+    assert_eq!(events.len(), 3, "one turn + two derived tool calls");
+    assert_eq!(events[0].kind, mayday::event::EventKind::ModelTurn);
+    for e in &events[1..] {
+        assert_eq!(e.kind, mayday::event::EventKind::ToolCall);
+        assert!(e.summary.starts_with("tool_call "));
+        let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
+        assert_eq!(payload["from_hop"], 1, "derived calls link back to the turn");
+    }
+    assert!(events[1].payload.contains("get_weather"));
+    assert!(events[1].payload.contains("Tokyo"));
+    assert!(events[2].payload.contains("write_file"));
+    // secrets inside tool arguments are scrubbed at write time too
+    let masked = capture::scrub("sk-secret123456789012");
+    assert!(!masked.contains("sk-secret123456789012"));
+    let mut secret_outside = false;
+    for e in &events {
+        if e.payload.contains("sk-secret123456789012") {
+            secret_outside = true;
+        }
+    }
+    assert!(!secret_outside, "raw secret must not survive scrub");
+    assert!(events[1].payload.contains(&masked) || !events[1].payload.contains("sk-"));
+
+    // the database file itself must hold no readable secret
+    let bytes = std::fs::read(&db_path).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("sk-secret123456789012"));
+}

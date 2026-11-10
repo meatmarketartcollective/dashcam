@@ -89,6 +89,18 @@ impl Store {
         summary: &str,
         payload: &str,
     ) -> rusqlite::Result<()> {
+        self.append_get_seq(session, kind, summary, payload).map(|_| ())
+    }
+
+    /// Like `append`, but returns the seq of the hop just written, so derived
+    /// hops can point back at their source.
+    pub fn append_get_seq(
+        &self,
+        session: i64,
+        kind: EventKind,
+        summary: &str,
+        payload: &str,
+    ) -> rusqlite::Result<i64> {
         let seq: i64 = self.conn().query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?1",
             [session],
@@ -104,7 +116,7 @@ impl Store {
                 self.enc(payload)
             ],
         )?;
-        Ok(())
+        Ok(seq)
     }
 
     pub fn sessions(&self) -> rusqlite::Result<Vec<(i64, String, Option<String>, i64)>> {
