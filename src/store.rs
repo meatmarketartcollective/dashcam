@@ -1,8 +1,17 @@
+use crate::crypto;
 use crate::event::{Event, EventKind};
 use rusqlite::Connection;
+use std::sync::Mutex;
 
+/// The timeline. Every session is one agent run; every event is one hop.
+///
+/// With a key, summaries, session notes, and full payloads are encrypted at
+/// rest (AES-256-GCM): a tool that opens the file directly sees structured
+/// metadata only, never readable content. All real access goes through this
+/// app, which holds the key and decrypts in memory.
 pub struct Store {
-    conn: Connection,
+    conn: Mutex<Connection>,
+    key: Option<Vec<u8>>,
 }
 
 const SCHEMA: &str = "
@@ -25,65 +34,133 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq);
 ";
 
 impl Store {
-    pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
+    pub fn open(path: &std::path::Path, key_hex: Option<&str>) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
         }
         let conn = Connection::open(path)?;
+        let key = match key_hex {
+            None => None,
+            Some(hex) => match crypto::hex_decode(hex) {
+                Some(k) if k.len() == 32 => Some(k),
+                _ => {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "timeline key must be 64 hex characters (32 bytes)".into(),
+                    ))
+                }
+            },
+        };
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        Ok(Self { conn: Mutex::new(conn), key })
+    }
+
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().expect("timeline lock")
+    }
+
+    fn enc(&self, s: &str) -> String {
+        match &self.key {
+            Some(k) => crypto::encrypt(k, s),
+            None => s.to_string(),
+        }
+    }
+
+    fn dec(&self, s: &str) -> String {
+        match &self.key {
+            Some(k) => crypto::decrypt(k, s).unwrap_or_else(|| s.to_string()),
+            None => s.to_string(),
+        }
     }
 
     pub fn new_session(&self, note: Option<&str>) -> rusqlite::Result<i64> {
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO sessions (note) VALUES (?1)",
-            [note.unwrap_or_default()],
+            [self.enc(note.unwrap_or_default()).as_str()],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(self.conn().last_insert_rowid())
     }
 
-    pub fn append(&self, session: i64, kind: EventKind, summary: &str, payload: &str) -> rusqlite::Result<()> {
-        let seq: i64 = self.conn.query_row(
+    pub fn append(
+        &self,
+        session: i64,
+        kind: EventKind,
+        summary: &str,
+        payload: &str,
+    ) -> rusqlite::Result<()> {
+        let seq: i64 = self.conn().query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?1",
             [session],
             |r| r.get::<_, i64>(0),
         )? + 1;
-        self.conn.execute(
+        self.conn().execute(
             "INSERT INTO events (session_id, seq, kind, summary, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![session, seq, kind_to_str(kind), summary, payload],
+            rusqlite::params![
+                session,
+                seq,
+                kind_to_str(kind),
+                self.enc(summary),
+                self.enc(payload)
+            ],
         )?;
         Ok(())
     }
 
     pub fn sessions(&self) -> rusqlite::Result<Vec<(i64, String, Option<String>, i64)>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT s.id, s.started_at, s.note,
                     (SELECT COUNT(*) FROM events e WHERE e.session_id = s.id) AS n
              FROM sessions s ORDER BY s.id",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
         })?;
-        rows.collect()
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, started, note, n) = row?;
+            out.push((id, started, note.map(|n| self.dec(&n)), n));
+        }
+        Ok(out)
     }
 
     pub fn events(&self, session: i64) -> rusqlite::Result<Vec<Event>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT id, session_id, seq, ts, kind, summary, payload
              FROM events WHERE session_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map([session], |r| {
-            Ok(Event {
-                id: r.get(0)?,
-                session_id: r.get(1)?,
-                seq: r.get(2)?,
-                ts: r.get(3)?,
-                kind: str_to_kind(&r.get::<_, String>(4)?),
-                summary: r.get(5)?,
-                payload: r.get(6)?,
-            })
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
         })?;
-        rows.collect()
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, session_id, seq, ts, kind, summary, payload) = row?;
+            out.push(Event {
+                id,
+                session_id,
+                seq,
+                ts,
+                kind: str_to_kind(&kind),
+                summary: self.dec(&summary),
+                payload: self.dec(&payload),
+            });
+        }
+        Ok(out)
     }
 }
 

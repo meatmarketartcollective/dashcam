@@ -1,11 +1,14 @@
 use mayday::event::EventKind;
 use mayday::store::Store;
 
+const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+const K2: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
 #[test]
 fn session_and_events_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("t.db");
-    let store = Store::open(&db).unwrap();
+    let store = Store::open(&db, Some(K1)).unwrap();
 
     let s = store.new_session(Some("openclaw run 42")).unwrap();
     assert!(s >= 1);
@@ -18,6 +21,7 @@ fn session_and_events_round_trip() {
     let sessions = store.sessions().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].3, 4);
+    assert_eq!(sessions[0].2.as_deref(), Some("openclaw run 42"));
 
     let events = store.events(s).unwrap();
     assert_eq!(events.len(), 4);
@@ -30,7 +34,39 @@ fn session_and_events_round_trip() {
 #[test]
 fn empty_db_lists_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(&dir.path().join("t.db")).unwrap();
+    let store = Store::open(&dir.path().join("t.db"), Some(K1)).unwrap();
     assert!(store.sessions().unwrap().is_empty());
     assert!(store.events(1).unwrap().is_empty());
+}
+
+#[test]
+fn wrong_key_yields_no_readables() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("t.db");
+    {
+        let store = Store::open(&db, Some(K1)).unwrap();
+        let s = store.new_session(Some("flight label")).unwrap();
+        store.append(s, EventKind::Prompt, "secret summary", "secret payload").unwrap();
+    }
+    let store = Store::open(&db, Some(K2)).unwrap();
+    let sessions = store.sessions().unwrap();
+    let note = sessions[0].2.clone().unwrap_or_default();
+    assert!(!note.contains("flight label"));
+    let events = store.events(1).unwrap();
+    assert!(!events[0].payload.contains("secret payload"));
+    assert!(!events[0].summary.contains("secret summary"));
+}
+
+#[test]
+fn file_on_disk_holds_no_readables() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("t.db");
+    let store = Store::open(&db, Some(K1)).unwrap();
+    let s = store.new_session(Some("label on disk test")).unwrap();
+    store.append(s, EventKind::ToolCall, "cmd summary", "payload body text").unwrap();
+    let bytes = std::fs::read(&db).unwrap();
+    let raw = String::from_utf8_lossy(&bytes);
+    assert!(!raw.contains("payload body text"));
+    assert!(!raw.contains("cmd summary"));
+    assert!(!raw.contains("label on disk test"));
 }

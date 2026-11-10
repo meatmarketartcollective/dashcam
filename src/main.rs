@@ -1,13 +1,17 @@
+use mayday::capture;
+use mayday::key;
 use mayday::store::Store;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "mayday", version, about = "Local flight recorder for agent sessions")]
 struct Cli {
     /// Path to the mayday timeline database (default: ~/.mayday/timeline.db)
-    #[arg(short, long, default_value = None)]
+    #[arg(short, long)]
     db: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -16,8 +20,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Record a session (capture transports land here in the MVP+1)
+    /// Record a session by proxying the model API boundary
     Record {
+        /// Local port to listen on (the harness points its API base URL here)
+        #[arg(short, long, default_value = "8099")]
+        port: u16,
+        /// Real provider base URL, e.g. https://api.openai.com
+        #[arg(short, long)]
+        upstream: String,
         /// Human label for the session, e.g. the harness and task
         #[arg(short, long)]
         note: Option<String>,
@@ -33,10 +43,6 @@ enum Command {
 }
 
 fn default_db() -> PathBuf {
-    dirs_or_cwd()
-}
-
-fn dirs_or_cwd() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         let mut p = PathBuf::from(home);
         p.push(".mayday");
@@ -46,32 +52,48 @@ fn dirs_or_cwd() -> PathBuf {
     PathBuf::from("timeline.db")
 }
 
+fn open_store(db_path: &std::path::Path) -> Store {
+    let mut key_path = db_path.to_path_buf();
+    key_path.set_file_name("key");
+    let hex = key::load_or_create(&key_path).expect("load or create timeline key");
+    Store::open(db_path, Some(&hex)).expect("open timeline db")
+}
+
 fn main() {
     let cli = Cli::parse();
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { note } => {
-            let store = Store::open(&db_path).expect("open timeline db");
-            let id = store
-                .new_session(note.as_deref())
-                .expect("create session");
-            println!("session {id} opened at {}", db_path.display());
-            println!("capture transports are not wired yet; this session records nothing.");
+        Command::Record { port, upstream, note } => {
+            let store = Arc::new(open_store(&db_path));
+            let id = store.new_session(note.as_deref()).expect("create session");
+            println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
+            println!(
+                "point the harness's API base URL at http://127.0.0.1:{port} (plain HTTP to localhost; mayday makes the secure connection outward)"
+            );
+            let running = Arc::new(AtomicBool::new(true));
+            if let Err(e) = capture::serve(
+                store,
+                capture::ProxyConfig { port, upstream, session: id },
+                running,
+            ) {
+                eprintln!("capture stopped: {e}");
+                std::process::exit(1);
+            }
         }
         Command::Timeline => {
-            let store = Store::open(&db_path).expect("open timeline db");
+            let store = open_store(&db_path);
             for (id, started, note, events) in store.sessions().expect("list sessions") {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
             }
         }
         Command::Replay { session } => {
-            let store = Store::open(&db_path).expect("open timeline db");
+            let store = open_store(&db_path);
             for e in store.events(session).expect("read events") {
-                println!(
-                    "[{}] {:?} {}",
-                    e.ts, e.kind, e.summary
-                );
+                println!("[{}] {:?} {}", e.ts, e.kind, e.summary);
+                if e.payload.len() > 2 && e.payload != "{}" {
+                    println!("    {}", e.payload);
+                }
             }
         }
     }
