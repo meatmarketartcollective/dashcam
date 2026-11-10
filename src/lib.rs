@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod compare;
 pub mod derive;
 pub mod redact;
 pub mod replay;
@@ -8,4 +9,5 @@ pub mod filediff;
 pub mod key;
 pub mod mcp;
 pub mod store;
+pub mod watch;
 pub mod web;

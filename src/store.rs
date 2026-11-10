@@ -1,4 +1,5 @@
 use crate::crypto;
+use crate::redact;
 use crate::event::{Event, EventKind};
 use rusqlite::Connection;
 use std::os::unix::fs::OpenOptionsExt;
@@ -203,6 +204,41 @@ impl Store {
         Ok(out)
     }
 
+    /// Hops with a seq greater than `min_seq`, oldest first: the live-tail
+    /// read behind `mayday watch`.
+    pub fn events_since(&self, session: i64, min_seq: i64) -> rusqlite::Result<Vec<Event>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, seq, ts, kind, summary, payload
+             FROM events WHERE session_id = ?1 AND seq > ?2 ORDER BY seq",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session, min_seq], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, session_id, seq, ts, kind, summary, payload) = row?;
+            out.push(Event {
+                id,
+                session_id,
+                seq,
+                ts,
+                kind: str_to_kind(&kind),
+                summary: self.dec(&summary),
+                payload: self.dec(&payload),
+            });
+        }
+        Ok(out)
+    }
+
     /// Search every session's decrypted summaries and payloads for `query`
     /// (case-insensitive substring). Returns (session_id, event) pairs, at
     /// most 100, in session then seq order.
@@ -227,6 +263,160 @@ impl Store {
         }
         Ok(out)
     }
+    /// (seq, tool name) for every tool call in a session, oldest first.
+    /// The name comes from the payload's "tool" field; a row whose payload
+    /// does not parse falls back to the summary's word after "tool_call".
+    pub fn tool_call_names(&self, session: i64) -> rusqlite::Result<Vec<(i64, String)>> {
+        Ok(self
+            .events(session)?
+            .into_iter()
+            .filter(|e| e.kind == EventKind::ToolCall)
+            .map(|e| {
+                let name = serde_json::from_str::<serde_json::Value>(&e.payload)
+                    .ok()
+                    .and_then(|v| v.get("tool").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_else(|| {
+                        e.summary
+                            .strip_prefix("tool_call")
+                            .unwrap_or(&e.summary)
+                            .trim()
+                            .to_string()
+                    });
+                (e.seq, name)
+            })
+            .collect())
+    }
+}
+
+impl Store {
+    /// Walk the whole timeline and check every encrypted field decrypts with
+    /// this store's key. The regular read paths fall back to raw ciphertext
+    /// when decryption fails, which would hide a wrong key or damaged rows;
+    /// this is the honest check that catches them.
+    pub fn verify(&self) -> rusqlite::Result<VerifyReport> {
+        let mut report = VerifyReport {
+            encrypted: self.key.is_some(),
+            ..Default::default()
+        };
+        if !report.encrypted {
+            return Ok(report);
+        }
+        let k = self.key.as_ref().unwrap();
+        for row in self.raw_rows()? {
+            report.checked += 1;
+            if crypto::decrypt(k, &row.summary).is_none() {
+                report.failed.push(VerifyMiss {
+                    session_id: row.session_id,
+                    seq: row.seq,
+                    field: "summary",
+                });
+            }
+            if crypto::decrypt(k, &row.payload).is_none() {
+                report.failed.push(VerifyMiss {
+                    session_id: row.session_id,
+                    seq: row.seq,
+                    field: "payload",
+                });
+            }
+        }
+        Ok(report)
+    }
+
+    /// Scan the timeline for redaction leaks: stored text that would still
+    /// change under the redactor's rules, meaning secret-shaped text got in
+    /// unscrubbed. With a key, undecryptable rows are counted and skipped
+    /// (`verify` is the tool that reports them).
+    pub fn audit(&self, redactor: &redact::Redactor) -> rusqlite::Result<AuditReport> {
+        let mut report = AuditReport::default();
+        for row in self.raw_rows()? {
+            report.scanned += 1;
+            for (raw, field) in [(&row.summary, "summary"), (&row.payload, "payload")] {
+                let text = match &self.key {
+                    Some(k) => match crypto::decrypt(k, raw) {
+                        Some(t) => t,
+                        None => {
+                            report.undecryptable += 1;
+                            continue;
+                        }
+                    },
+                    None => raw.clone(),
+                };
+                let scrubbed = redactor.scrub(&text);
+                if scrubbed != text {
+                    report.leaks.push(LeakHit {
+                        session_id: row.session_id,
+                        seq: row.seq,
+                        field,
+                        preview: scrubbed.chars().take(120).collect(),
+                    });
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    fn raw_rows(&self) -> rusqlite::Result<Vec<RawRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, seq, summary, payload FROM events ORDER BY session_id, seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(RawRow {
+                session_id: r.get(0)?,
+                seq: r.get(1)?,
+                summary: r.get(2)?,
+                payload: r.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+}
+
+/// One hop of the timeline that will not decrypt with the current key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyMiss {
+    pub session_id: i64,
+    pub seq: i64,
+    /// Which encrypted field failed: "summary" or "payload".
+    pub field: &'static str,
+}
+
+/// What `mayday verify` found walking the timeline.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyReport {
+    /// False for a plaintext store (no key): there is nothing to check.
+    pub encrypted: bool,
+    pub checked: usize,
+    pub failed: Vec<VerifyMiss>,
+}
+
+/// One field where stored text should have been scrubbed but was not.
+#[derive(Debug, Clone)]
+pub struct LeakHit {
+    pub session_id: i64,
+    pub seq: i64,
+    /// "summary" or "payload".
+    pub field: &'static str,
+    /// The field after scrubbing (first 120 chars), so the report shows the
+    /// hole without printing the secret.
+    pub preview: String,
+}
+
+/// What `mayday audit` found scanning the timeline for redaction leaks.
+#[derive(Debug, Clone, Default)]
+pub struct AuditReport {
+    pub scanned: usize,
+    pub undecryptable: usize,
+    pub leaks: Vec<LeakHit>,
+}
+
+/// A decrypted-lookup row straight from storage, before the decrypt-or-pass
+/// fallback. Only integrity tooling reads these.
+struct RawRow {
+    session_id: i64,
+    seq: i64,
+    summary: String,
+    payload: String,
 }
 
 /// How much history the timeline keeps. Either limit may be None (no limit).

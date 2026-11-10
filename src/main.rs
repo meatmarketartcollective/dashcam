@@ -101,6 +101,32 @@ enum Command {
         #[arg(short, long)]
         interactive: bool,
     },
+    /// Follow a live session, printing each hop as it lands (ctrl-c to stop)
+    Watch {
+        /// Session id (see `mayday timeline`)
+        #[arg(short, long)]
+        session: i64,
+        /// Seconds between polls
+        #[arg(long, default_value_t = 0.5)]
+        interval: f64,
+    },
+    /// Walk the timeline and report any hop that will not decrypt with the current key
+    Verify,
+    /// Scan the timeline for redaction leaks: secret-shaped text that should have been scrubbed
+    Audit {
+        /// Extra redaction rules, one regex per line; built-ins always on
+        #[arg(short, long)]
+        rules: Option<PathBuf>,
+    },
+    /// Compare two sessions' tool-call sequences to spot a changed path
+    DiffSessions {
+        /// First session id (see `mayday timeline`)
+        #[arg(short = 'a')]
+        a: i64,
+        /// Second session id
+        #[arg(short = 'b')]
+        b: i64,
+    },
 }
 
 fn default_db() -> PathBuf {
@@ -184,6 +210,146 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Watch { session, interval } => {
+            let store = open_store(&db_path);
+            let exists = store
+                .sessions()
+                .expect("list sessions")
+                .iter()
+                .any(|(id, _, _, _)| *id == session);
+            if !exists {
+                eprintln!("no session {session}");
+                std::process::exit(1);
+            }
+            let existing = store.events(session).expect("read session");
+            for e in &existing {
+                println!("{}", mayday::watch::render_line(e));
+            }
+            let mut last_seq = existing.last().map(|e| e.seq).unwrap_or(0);
+            println!("watching session {session} (ctrl-c to stop)");
+            let gap = std::time::Duration::from_secs_f64(interval.max(0.1));
+            loop {
+                std::thread::sleep(gap);
+                match mayday::watch::poll_once(&store, session, last_seq) {
+                    Ok(events) => {
+                        for e in events {
+                            println!("{}", mayday::watch::render_line(&e));
+                            last_seq = e.seq;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("watch: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        Command::Verify => {
+            let store = open_store(&db_path);
+            match store.verify() {
+                Ok(report) => {
+                    if !report.encrypted {
+                        println!(
+                            "plaintext store (no key): nothing to decrypt, {} hops on file",
+                            report.checked
+                        );
+                    } else if report.failed.is_empty() {
+                        println!(
+                            "ok: every encrypted field decrypts ({} hops checked)",
+                            report.checked
+                        );
+                    } else {
+                        println!(
+                            "{} of {} hops will not decrypt with this key:",
+                            report.failed.len(),
+                            report.checked
+                        );
+                        for f in &report.failed {
+                            println!("  session {} seq {} ({})", f.session_id, f.seq, f.field);
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("verify: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Audit { rules } => {
+            let store = open_store(&db_path);
+            let redactor = match rules {
+                Some(path) => mayday::redact::Redactor::load(&path),
+                None => mayday::redact::Redactor::builtin(),
+            };
+            match store.audit(&redactor) {
+                Ok(report) => {
+                    if report.leaks.is_empty() {
+                        println!(
+                            "clean: {} hops scanned, no scrub-shaped secrets found",
+                            report.scanned
+                        );
+                        if report.undecryptable > 0 {
+                            println!(
+                                "{} fields could not be decrypted and were skipped (run mayday verify)",
+                                report.undecryptable
+                            );
+                        }
+                    } else {
+                        println!(
+                            "{} leak(s) across {} hops scanned:",
+                            report.leaks.len(),
+                            report.scanned
+                        );
+                        for l in &report.leaks {
+                            println!(
+                                "  session {} seq {} ({}): {}",
+                                l.session_id, l.seq, l.field, l.preview
+                            );
+                        }
+                        std::process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("audit: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::DiffSessions { a, b } => {
+            let store = open_store(&db_path);
+            match (store.tool_call_names(a), store.tool_call_names(b)) {
+                (Ok(ac), Ok(bc)) => {
+                    let names_a: Vec<String> = ac.into_iter().map(|(_, n)| n).collect();
+                    let names_b: Vec<String> = bc.into_iter().map(|(_, n)| n).collect();
+                    let diff = mayday::compare::diff_tool_sequences(&names_a, &names_b);
+                    println!(
+                        "session {a}: {} tool calls, session {b}: {} tool calls, {} aligned",
+                        diff.a_calls, diff.b_calls, diff.common
+                    );
+                    match diff.first_divergence {
+                        None => println!("same path: every call lines up"),
+                        Some((ia, ib)) => {
+                            println!(
+                                "first divergence: session {a} step {} / session {b} step {}",
+                                ia + 1,
+                                ib + 1
+                            );
+                            for (step, name) in &diff.only_in_a {
+                                println!("  only in {a}: step {} {name}", step + 1);
+                            }
+                            for (step, name) in &diff.only_in_b {
+                                println!("  only in {b}: step {} {name}", step + 1);
+                            }
+                        }
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => {
+                    eprintln!("diff: {e}");
                     std::process::exit(1);
                 }
             }
