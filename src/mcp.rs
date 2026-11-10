@@ -22,7 +22,12 @@ impl Mcp {
             Ok(m) => m,
             Err(_) => return Some(jsonrpc_error(Value::Null, -32700, "parse error")),
         };
-        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        // No id means a notification: JSON-RPC owes it no response. This also
+        // keeps malformed garbage without an id from drawing protocol replies.
+        let id = match msg.get("id") {
+            Some(id) => id.clone(),
+            None => return None,
+        };
         let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
         match method {
             "initialize" => Some(jsonrpc_ok(
@@ -374,7 +379,18 @@ pub fn run(store: Arc<Store>) -> Result<(), String> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("stdin: {e}"))?;
+        let line = match line {
+            Ok(l) => l,
+            // undecodable bytes are a broken request, not a broken server:
+            // answer with a parse error and keep serving
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                let resp = jsonrpc_error(Value::Null, -32700, "parse error: invalid utf-8");
+                let _ = writeln!(out, "{resp}");
+                let _ = out.flush();
+                continue;
+            }
+            Err(e) => return Err(format!("stdin: {e}")),
+        };
         if line.trim().is_empty() {
             continue;
         }

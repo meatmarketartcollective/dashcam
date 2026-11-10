@@ -103,3 +103,14 @@ returns the session summary. `resources/read` also accepts
 JSON with the payload embedded as parsed JSON. Unknown or malformed URIs
 are rejected with the MCP "resource not found" error (-32002), never a
 crash. Read-only, local-only, same store reads as the scan tools.
+
+## Hardening
+
+The stdio server survives what a client can throw at it: undecodable bytes
+get a parse error and the server keeps serving; messages without an id are
+notifications and draw no response; oversized (1 MB) arguments answer
+normally; over-deep JSON hits the parser's depth limit as a clean parse
+error; wrong-typed tool arguments come back as tool errors, never panics.
+A stress test runs four reader threads across every MCP surface while a
+writer records, against the shared encrypted store, and must finish
+without deadlock.

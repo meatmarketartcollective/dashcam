@@ -405,3 +405,141 @@ fn unknown_or_malformed_resource_uris_are_rejected() {
         assert_eq!(resp["error"]["code"], -32002, "{uri}");
     }
 }
+
+#[test]
+fn notifications_owe_no_response() {
+    let (_dir, store, _s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    assert!(mcp
+        .handle_line(r#"{"jsonrpc":"2.0","method":"ping"}"#)
+        .is_none());
+    assert!(mcp
+        .handle_line(r#"{"jsonrpc":"2.0","method":"anything/unknown"}"#)
+        .is_none());
+    // a parse error has no id to honor, and still answers
+    let resp = rpc_parse_err(&mcp);
+    assert_eq!(resp["error"]["code"], -32700);
+}
+
+#[test]
+fn malformed_requests_get_clean_errors_not_crashes() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    let big = "x".repeat(1_000_000);
+    let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
+    let cases = vec![
+        // method not a string
+        r#"{"jsonrpc":"2.0","id":60,"method":123}"#.to_string(),
+        // tools/call with no params at all
+        r#"{"jsonrpc":"2.0","id":61,"method":"tools/call"}"#.to_string(),
+        // arguments of the wrong shape
+        r#"{"jsonrpc":"2.0","id":62,"method":"tools/call","params":{"name":"list_hops","arguments":"nope"}}"#.to_string(),
+        // wrong-typed tool arguments
+        r#"{"jsonrpc":"2.0","id":63,"method":"tools/call","params":{"name":"get_hop","arguments":{"session":"one","seq":1}}}"#.to_string(),
+        // deeply nested json exceeds the parser's depth limit
+        format!(r#"{{"jsonrpc":"2.0","id":64,"method":"ping","params":{{"a":{deep}}}}}"#),
+        // resources/read on a garbage uri
+        r#"{"jsonrpc":"2.0","id":66,"method":"resources/read","params":{"uri":"http://x"}}"#.to_string(),
+    ];
+    for (i, line) in cases.iter().enumerate() {
+        let resp = rpc(&mcp, line);
+        let has_error = resp.get("error").is_some();
+        let is_tool_error = resp["result"]["isError"] == json!(true);
+        assert!(
+            has_error || is_tool_error,
+            "case {i} got neither error nor isError: {resp}"
+        );
+    }
+    // a one-megabyte argument value is answered normally, not choked on
+    let huge = format!(
+        r#"{{"jsonrpc":"2.0","id":65,"method":"tools/call","params":{{"name":"search_timeline","arguments":{{"session":{s1},"query":"{big}"}}}}}}"#
+    );
+    let resp = rpc(&mcp, &huge);
+    assert!(resp["result"]["content"][0]["text"].is_string(), "{resp}");
+}
+
+#[test]
+fn concurrent_readers_and_a_writer_do_not_deadlock() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = std::sync::Arc::new(Mcp::new(store.clone()));
+
+    // one writer keeps recording while readers hammer every surface
+    let writer_store = store.clone();
+    let writer = std::thread::spawn(move || {
+        for i in 0..60 {
+            writer_store
+                .append(s1, EventKind::ToolCall, &format!("stress {i}"), r#"{"tool":"probe","arguments":"{}"}"#)
+                .unwrap();
+        }
+    });
+
+    let readers: Vec<_> = (0..4)
+        .map(|r| {
+            let mcp = mcp.clone();
+            std::thread::spawn(move || {
+                for i in 0..40 {
+                    for line in [
+                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string(),
+                        r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#.to_string(),
+                        format!(r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"search_timeline","arguments":{{"session":{s1},"query":"stress"}}}}}}"#),
+                        format!(r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"summarize_session","arguments":{{"session":{s1}}}}}}}"#),
+                        format!(r#"{{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{{"uri":"mayday://session/{s1}/hops/1"}}}}"#),
+                    ] {
+                        let resp = mcp.handle_line(&line).expect("readers get responses");
+                        let v: Value = serde_json::from_str(&resp).unwrap();
+                        assert!(v.get("result").is_some() || v.get("error").is_some(), "reader {r} iter {i}: {resp}");
+                    }
+                }
+            })
+        })
+        .collect();
+
+    writer.join().unwrap();
+    for r in readers {
+        r.join().unwrap();
+    }
+    let n: usize = {
+        let events = store.events(s1).unwrap();
+        events.len()
+    };
+    assert!(n >= 60, "writer events missing: {n}");
+}
+
+#[test]
+fn invalid_utf8_on_stdio_does_not_kill_the_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("timeline.db");
+    let store = Store::open(&db, Some("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")).unwrap();
+    drop(store);
+    std::fs::write(dir.path().join("key"), "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\n").unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mayday"))
+        .args(["--db", db.to_str().unwrap(), "mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn mayday mcp");
+
+    use std::io::Write;
+    let mut stdin = child.stdin.take().unwrap();
+    // garbage bytes that are not valid utf-8, then a perfectly good request
+    stdin.write_all(&[0xff, 0xfe, b'\n']).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{}}}}"#).unwrap();
+    stdin.flush().unwrap();
+    drop(stdin);
+
+    use std::io::BufRead;
+    let stdout = child.stdout.take().unwrap();
+    let lines: Vec<String> = std::io::BufReader::new(stdout)
+        .lines()
+        .map_while(Result::ok)
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let r1: Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(r1["error"]["code"], -32700, "the bad bytes owe a parse error");
+    let r2: Value = serde_json::from_str(&lines[1]).unwrap();
+    assert_eq!(r2["result"]["serverInfo"]["name"], "mayday", "the server kept serving");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
