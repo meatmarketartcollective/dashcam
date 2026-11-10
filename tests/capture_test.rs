@@ -5,7 +5,19 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::net::TcpStream;
 use std::time::Duration;
+
+/// The proxy thread binds inside serve(); a fixed sleep races on a loaded box.
+fn wait_port(port: u16) {
+    for _ in 0..200 {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("proxy port {port} never came up");
+}
 
 const K: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
@@ -92,7 +104,7 @@ fn streaming_responses_are_captured_intact() {
     thread::spawn(move || {
         let _ = capture::serve(s2, cfg, r2);
     });
-    thread::sleep(Duration::from_millis(300));
+    wait_port(proxy_port);
 
     let resp = ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
         .set("Content-Type", "application/json")
@@ -145,7 +157,7 @@ fn proxied_turns_land_in_the_timeline() {
     thread::spawn(move || {
         let _ = capture::serve(s2, cfg, r2);
     });
-    thread::sleep(Duration::from_millis(300));
+    wait_port(proxy_port);
 
     let resp = ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
         .set("Content-Type", "application/json")

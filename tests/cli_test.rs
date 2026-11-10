@@ -25,59 +25,71 @@ fn spawn_upstream() -> u16 {
                 resp_body
             );
             let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
         }
     });
     port
 }
 
-/// The M1 closer: the actual `mayday record` binary, a harness pointed at it,
-/// and a timeline that decrypts with the key file the binary created.
+/// The real binary, end to end: record proxies a turn into the encrypted
+/// timeline, then the CLI reads it back through the app.
 #[test]
 fn record_binary_captures_end_to_end() {
     let upstream_port = spawn_upstream();
-
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("timeline.db");
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mayday"))
-        .args([
-            "--db", db.to_str().unwrap(),
-            "record",
-            "--port", &port.to_string(),
-            "--upstream", &format!("http://127.0.0.1:{upstream_port}"),
-            "--note", "scripted agent",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn mayday record");
-
-    let stdout = child.stdout.take().unwrap();
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
-    let mut ready = false;
-    let mut seen: Vec<String> = Vec::new();
-    for _ in 0..50 {
-        match lines.next() {
-            Some(Ok(line)) if line.contains("recording on") => {
-                ready = true;
-                break;
+    // Spawn `mayday record` on a fresh port; occasionally a just-dropped
+    // ephemeral port is refused on rebind, so retry with a new port.
+    let mut child_opt: Option<std::process::Child> = None;
+    let mut port = 0u16;
+    for attempt in 0..5 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = listener.local_addr().unwrap().port();
+        drop(listener);
+        port = p;
+        let mut c = Command::new(env!("CARGO_BIN_EXE_mayday"))
+            .args([
+                "--db", db.to_str().unwrap(),
+                "record",
+                "--port", &port.to_string(),
+                "--upstream", &format!("http://127.0.0.1:{upstream_port}"),
+                "--note", "scripted agent",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mayday record");
+        let stdout = c.stdout.take().unwrap();
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        let mut ready = false;
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..50 {
+            match lines.next() {
+                Some(Ok(line)) if line.contains("recording on") => {
+                    ready = true;
+                    break;
+                }
+                Some(Ok(line)) => { seen.push(line); continue }
+                other => { seen.push(format!("stream ended: {other:?}")); break }
             }
-            Some(Ok(line)) => { seen.push(line); continue }
-            other => { seen.push(format!("stream ended: {other:?}")); break }
         }
-    }
-    if !ready {
+        if ready {
+            child_opt = Some(c);
+            break;
+        }
         let mut err = String::new();
-        if let Some(e) = child.stderr.take() {
+        if let Some(e) = c.stderr.take() {
             let _ = BufReader::new(e).read_to_string(&mut err);
         }
-        panic!("mayday record never announced readiness; stdout: {seen:?}; stderr: {err}");
+        let _ = c.kill();
+        let _ = c.wait();
+        if attempt == 4 {
+            panic!("mayday record never announced readiness after 5 attempts; last stdout: {seen:?}; stderr: {err}");
+        }
     }
+    let mut child = child_opt.expect("mayday record spawned");
 
     // the harness points its API base URL at the proxy
     let mut resp = None;
