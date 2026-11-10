@@ -150,7 +150,7 @@ fn mcp_initialize_and_tools_list() {
         ]
     );
     // unknown method is a protocol error
-    let unknown = rpc(&mcp, r#"{"jsonrpc":"2.0","id":3,"method":"resources/list"}"#);
+    let unknown = rpc(&mcp, r#"{"jsonrpc":"2.0","id":3,"method":"prompts/list"}"#);
     assert_eq!(unknown["error"]["code"], -32601);
 }
 
@@ -325,4 +325,83 @@ fn mcp_stdio_binary_end_to_end() {
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn resources_list_names_every_session() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    let resp = rpc(&mcp, r#"{"jsonrpc":"2.0","id":30,"method":"resources/list"}"#);
+    let resources = resp["result"]["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(
+        resources[0]["uri"],
+        format!("mayday://session/{s1}")
+    );
+    assert_eq!(resources[0]["name"], "scripted agent");
+    assert!(resources[0]["description"]
+        .as_str()
+        .unwrap()
+        .contains("3 hops"));
+}
+
+#[test]
+fn reading_a_session_resource_returns_the_summary() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "resources/read",
+        "params": { "uri": format!("mayday://session/{s1}") },
+    })
+    .to_string();
+    let resp = rpc(&mcp, &line);
+    let contents = resp["result"]["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["mimeType"], "text/plain");
+    let text = contents[0]["text"].as_str().unwrap();
+    assert!(text.contains("3 hops") && text.contains("get_weather"), "{text}");
+}
+
+#[test]
+fn reading_a_hop_resource_returns_its_full_record() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    let line = json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "resources/read",
+        "params": { "uri": format!("mayday://session/{s1}/hops/2") },
+    })
+    .to_string();
+    let resp = rpc(&mcp, &line);
+    let contents = resp["result"]["contents"].as_array().unwrap();
+    assert_eq!(contents[0]["mimeType"], "application/json");
+    let parsed: Value = serde_json::from_str(contents[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(parsed["kind"], "tool_call");
+    assert_eq!(parsed["payload"]["tool"], "get_weather");
+}
+
+#[test]
+fn unknown_or_malformed_resource_uris_are_rejected() {
+    let (_dir, store, s1) = seeded_store();
+    let mcp = Mcp::new(store);
+    for (id, uri) in [
+        (40, "mayday://other/thing"),
+        (41, "mayday://session/999"),
+        (42, "mayday://session/notanumber"),
+        (43, "mayday://session/1/branch/2"),
+        (44, "mayday://session/1/hops/notanumber"),
+    ] {
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "resources/read",
+            "params": { "uri": uri },
+        })
+        .to_string();
+        let resp = rpc(&mcp, &line);
+        assert_eq!(resp["error"]["code"], -32002, "{uri}");
+    }
 }

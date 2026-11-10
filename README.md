@@ -52,7 +52,10 @@ Record file changes at the file boundary:
 only. Point an MCP client at the binary and it can list sessions, walk
 hops, search the timeline, pull any hop or file diff, and summarize a
 session: list_sessions, list_hops, search_timeline, get_hop, get_diff,
-summarize_session.
+summarize_session. It also speaks resources: one resource per session
+(`mayday://session/1` reads back that session's summary, and
+`mayday://session/1/hops/2` reads back one hop's full record), so an agent
+can browse the timeline instead of only tool-calling.
 
 ## Multi-agent traces
 

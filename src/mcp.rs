@@ -29,7 +29,7 @@ impl Mcp {
                 id,
                 json!({
                     "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
+                    "capabilities": { "tools": {}, "resources": {} },
                     "serverInfo": {
                         "name": "mayday",
                         "version": env!("CARGO_PKG_VERSION"),
@@ -37,6 +37,20 @@ impl Mcp {
                 }),
             )),
             "notifications/initialized" => None,
+            "resources/list" => Some(jsonrpc_ok(
+                id,
+                json!({ "resources": self.resources_list() }),
+            )),
+            "resources/read" => {
+                let uri = msg
+                    .pointer("/params/uri")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
+                match self.read_resource(uri) {
+                    Ok(contents) => Some(jsonrpc_ok(id, json!({ "contents": [contents] }))),
+                    Err(e) => Some(jsonrpc_error(id, -32002, &e)),
+                }
+            }
             "ping" => Some(jsonrpc_ok(id, json!({}))),
             "tools/list" => Some(jsonrpc_ok(id, json!({ "tools": tool_specs() }))),
             "tools/call" => {
@@ -173,6 +187,78 @@ impl Mcp {
         {
             Some(v) => to_text(&v),
             None => Err(format!("no file_diff hop at session {session} seq {seq}")),
+        }
+    }
+
+    /// One resource per session: reading it returns the session summary.
+    fn resources_list(&self) -> Vec<Value> {
+        match self.store.sessions() {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, started, note, hops)| {
+                    let name = note.unwrap_or_else(|| format!("session {id}"));
+                    json!({
+                        "uri": format!("mayday://session/{id}"),
+                        "name": name,
+                        "description": format!("agent session started {started}, {hops} hops"),
+                        "mimeType": "text/plain",
+                    })
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Read a resource URI: mayday://session/{id} is the session summary,
+    /// mayday://session/{id}/hops/{seq} is one hop's full record.
+    fn read_resource(&self, uri: &str) -> Result<Value, String> {
+        let rest = uri
+            .strip_prefix("mayday://session/")
+            .ok_or_else(|| format!("unknown resource: {uri}"))?;
+        let (id_part, sub) = match rest.split_once('/') {
+            Some((id, sub)) => (id, Some(sub)),
+            None => (rest, None),
+        };
+        let id: i64 = id_part
+            .parse()
+            .map_err(|_| format!("unknown resource: {uri}"))?;
+        match sub {
+            None => {
+                let text = self
+                    .store
+                    .summarize_session(id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("resource not found: {uri}"))?;
+                Ok(json!({ "uri": uri, "mimeType": "text/plain", "text": text }))
+            }
+            Some(sub) if sub.starts_with("hops/") => {
+                let seq: i64 = sub
+                    .trim_start_matches("hops/")
+                    .parse()
+                    .map_err(|_| format!("unknown resource: {uri}"))?;
+                match self
+                    .store
+                    .get_hop(id, seq)
+                    .map_err(|e| e.to_string())?
+                {
+                    Some(e) => {
+                        let mut v =
+                            serde_json::to_value(&e).map_err(|x| x.to_string())?;
+                        if let Ok(parsed) = serde_json::from_str::<Value>(&e.payload) {
+                            v["payload"] = parsed;
+                        }
+                        let text = serde_json::to_string_pretty(&v)
+                            .map_err(|x| x.to_string())?;
+                        Ok(json!({
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text,
+                        }))
+                    }
+                    None => Err(format!("resource not found: {uri}")),
+                }
+            }
+            Some(_) => Err(format!("unknown resource: {uri}")),
         }
     }
 

@@ -93,3 +93,13 @@ every aged-out hop lands in that file first, one JSON line per hop,
 decrypted, payload embedded as parsed JSON. The file is appended to, so
 repeated prunes accumulate. `mayday export --session N [--out file]` does
 the same for a whole session on demand (stdout when no file is named).
+
+## Resources: browsing instead of tool-calling
+
+The MCP surface also speaks resources. `resources/list` returns one
+resource per session (`mayday://session/{id}`, text/plain); reading it
+returns the session summary. `resources/read` also accepts
+`mayday://session/{id}/hops/{seq}`, which returns one hop's full record as
+JSON with the payload embedded as parsed JSON. Unknown or malformed URIs
+are rejected with the MCP "resource not found" error (-32002), never a
+crash. Read-only, local-only, same store reads as the scan tools.
