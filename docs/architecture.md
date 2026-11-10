@@ -54,3 +54,29 @@ a time: the full payload pretty-printed, then the state at that hop (every
 summary up to and including it) so a failed run reads like a story. Keys:
 enter next, `b` back, `f` first, `l` last, `q` quit. `mayday replay <session>`
 keeps the one-shot dump.
+
+## Scan tools over MCP (milestone 3)
+
+`mayday mcp` speaks the Model Context Protocol on stdio: newline-delimited
+JSON-RPC 2.0 in, responses out, notifications answer nothing. It is
+read-only and local-only; there is no network listener. A developer points
+their coding agent's MCP config at the binary and the agent can scan the
+timeline it just recorded.
+
+Six tools, all thin wrappers over store reads:
+
+- `list_sessions` - id, start time, note, hop count
+- `list_hops {session}` - seq, kind, time, summary per hop
+- `search_timeline {query, limit?}` - case-insensitive substring over every
+  session's summaries and payloads, capped at 100 hits
+- `get_hop {session, seq}` - the full decrypted record; the payload is
+  embedded as parsed JSON when it parses
+- `get_diff {session, seq}` - the parsed file_diff payload (file, added and
+  removed lines, content, new_file/deleted/binary/truncation flags)
+- `summarize_session {session}` - hop counts by kind, tools called, files
+  touched, time span
+
+Missing arguments, unknown tools, unknown hops, and unknown sessions come
+back as `isError: true` results, never a crash. The summarize reader scopes
+its connection lock strictly: the store's connection is a non-reentrant
+mutex, so no reader may hold it across another reader call.

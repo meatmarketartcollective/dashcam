@@ -67,6 +67,8 @@ enum Command {
     },
     /// List sessions and their event counts
     Timeline,
+    /// Serve the scan tools over the MCP stdio protocol (read-only)
+    Mcp,
     /// Print every event of one session, oldest first
     Replay {
         /// Session id (see `mayday timeline`)
@@ -157,6 +159,13 @@ fn main() {
             let store = open_store(&db_path);
             for (id, started, note, events) in store.sessions().expect("list sessions") {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
+            }
+        }
+        Command::Mcp => {
+            let store = Arc::new(open_store(&db_path));
+            if let Err(e) = mayday::mcp::run(store) {
+                eprintln!("mcp stopped: {e}");
+                std::process::exit(1);
             }
         }
         Command::Replay { session, interactive } => {

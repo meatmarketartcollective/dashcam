@@ -295,3 +295,152 @@ fn str_to_kind(s: &str) -> EventKind {
         _ => EventKind::ModelTurn,
     }
 }
+
+impl Store {
+    /// One hop by session and seq, decrypted. None when there is no such hop.
+    pub fn get_hop(&self, session: i64, seq: i64) -> rusqlite::Result<Option<Event>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, seq, ts, kind, summary, payload
+             FROM events WHERE session_id = ?1 AND seq = ?2",
+        )?;
+        let mut rows = stmt.query_map([session, seq], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })?;
+        match rows.next() {
+            Some(row) => {
+                let (id, session_id, seq, ts, kind, summary, payload) = row?;
+                Ok(Some(Event {
+                    id,
+                    session_id,
+                    seq,
+                    ts,
+                    kind: str_to_kind(&kind),
+                    summary: self.dec(&summary),
+                    payload: self.dec(&payload),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The parsed payload of a file_diff hop: file, added/removed lines,
+    /// content, and edge flags (new_file, deleted, binary, truncation).
+    /// `Ok(None)` when the hop is missing or is not a file_diff hop.
+    pub fn get_diff(&self, session: i64, seq: i64) -> rusqlite::Result<Option<serde_json::Value>> {
+        let Some(e) = self.get_hop(session, seq)? else {
+            return Ok(None);
+        };
+        if e.kind != EventKind::FileDiff {
+            return Ok(None);
+        }
+        Ok(serde_json::from_str(&e.payload).ok())
+    }
+
+    /// A compact summary of one session: hop counts by kind, the tools the
+    /// agent called, the files it touched, and the run's time span.
+    /// `Ok(None)` when the session does not exist.
+    pub fn summarize_session(&self, session: i64) -> rusqlite::Result<Option<String>> {
+        // scope the lock: conn() guards a non-reentrant mutex, so no other
+        // Store reader (events(), sessions()) may run while it is held
+        let count: i64 = {
+            let conn = self.conn();
+            conn.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                [session],
+                |r| r.get(0),
+            )?
+        };
+        if count == 0 {
+            return Ok(None);
+        }
+        let events = self.events(session)?;
+        if events.is_empty() {
+            return Ok(Some(format!("session {session}: no hops recorded")));
+        }
+        let mut kind_counts: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut tools: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+        for e in &events {
+            let kind = serde_json::to_value(&e.kind)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "unknown".into());
+            *kind_counts.entry(kind).or_insert(0) += 1;
+            let Ok(p) = serde_json::from_str::<serde_json::Value>(&e.payload) else {
+                continue;
+            };
+            match e.kind {
+                EventKind::ToolCall => {
+                    let name = p.get("tool").and_then(|t| t.as_str()).unwrap_or("?");
+                    if !tools.iter().any(|t| t == name) {
+                        tools.push(name.to_string());
+                    }
+                }
+                EventKind::FileDiff => {
+                    if let Some(f) = p.get("file").and_then(|f| f.as_str()) {
+                        let detail = if p.get("deleted").and_then(|d| d.as_bool()).unwrap_or(false) {
+                            "(deleted)".to_string()
+                        } else if p.get("binary").and_then(|b| b.as_bool()).unwrap_or(false) {
+                            format!(
+                                "(binary, {} bytes)",
+                                p.get("bytes").and_then(|b| b.as_i64()).unwrap_or(0)
+                            )
+                        } else {
+                            let added = p.get("added").and_then(|v| v.as_array()).map_or(0, |a| a.len());
+                            let removed = p.get("removed").and_then(|v| v.as_array()).map_or(0, |a| a.len());
+                            if p.get("new_file").and_then(|n| n.as_bool()).unwrap_or(false) {
+                                format!("(new file, +{added})")
+                            } else {
+                                format!("(+{added} -{removed})")
+                            }
+                        };
+                        let entry = format!("{f} {detail}");
+                        if !files.contains(&entry) {
+                            files.push(entry);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let note = self
+            .sessions()?
+            .into_iter()
+            .find(|(id, _, _, _)| *id == session)
+            .and_then(|(_, _, n, _)| n);
+        let mut out = format!("session {session}");
+        if let Some(note) = note {
+            out.push_str(&format!(" \"{note}\""));
+        }
+        out.push_str(&format!(
+            ": {} hops ({} to {})",
+            events.len(),
+            events[0].ts,
+            events[events.len() - 1].ts
+        ));
+        let kinds: Vec<String> = kind_counts
+            .into_iter()
+            .map(|(k, n)| format!("{n} {k}"))
+            .collect();
+        out.push_str(&format!("\nkinds: {}", kinds.join(", ")));
+        if !tools.is_empty() {
+            out.push_str(&format!("\ntools: {}", tools.join(", ")));
+        }
+        if !files.is_empty() {
+            out.push_str("\nfiles:");
+            for f in &files {
+                out.push_str(&format!("\n  {f}"));
+            }
+        }
+        Ok(Some(out))
+    }
+}

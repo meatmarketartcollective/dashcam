@@ -6,5 +6,6 @@ pub mod crypto;
 pub mod event;
 pub mod filediff;
 pub mod key;
+pub mod mcp;
 pub mod store;
 pub mod web;
