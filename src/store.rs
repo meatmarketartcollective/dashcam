@@ -46,7 +46,7 @@ impl Store {
         let seq: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?1",
             [session],
-            |r| r.get(0),
+            |r| r.get::<_, i64>(0),
         )? + 1;
         self.conn.execute(
             "INSERT INTO events (session_id, seq, kind, summary, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -62,7 +62,7 @@ impl Store {
              FROM sessions s ORDER BY s.id",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?))
         })?;
         rows.collect()
     }

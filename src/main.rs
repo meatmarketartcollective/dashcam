@@ -1,5 +1,4 @@
-mod event;
-mod store;
+use mayday::store::Store;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -53,7 +52,7 @@ fn main() {
 
     match cli.command {
         Command::Record { note } => {
-            let store = store::Store::open(&db_path).expect("open timeline db");
+            let store = Store::open(&db_path).expect("open timeline db");
             let id = store
                 .new_session(note.as_deref())
                 .expect("create session");
@@ -61,13 +60,13 @@ fn main() {
             println!("capture transports are not wired yet; this session records nothing.");
         }
         Command::Timeline => {
-            let store = store::Store::open(&db_path).expect("open timeline db");
+            let store = Store::open(&db_path).expect("open timeline db");
             for (id, started, note, events) in store.sessions().expect("list sessions") {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
             }
         }
         Command::Replay { session } => {
-            let store = store::Store::open(&db_path).expect("open timeline db");
+            let store = Store::open(&db_path).expect("open timeline db");
             for e in store.events(session).expect("read events") {
                 println!(
                     "[{}] {:?} {}",
