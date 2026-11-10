@@ -72,6 +72,9 @@ enum Command {
         /// Session id (see `mayday timeline`)
         #[arg(short, long)]
         session: i64,
+        /// Step through one hop at a time instead of dumping the session
+        #[arg(short, long)]
+        interactive: bool,
     },
 }
 
@@ -156,12 +159,65 @@ fn main() {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
             }
         }
-        Command::Replay { session } => {
+        Command::Replay { session, interactive } => {
             let store = open_store(&db_path);
-            for e in store.events(session).expect("read events") {
-                println!("[{}] {:?} {}", e.ts, e.kind, e.summary);
-                if e.payload.len() > 2 && e.payload != "{}" {
-                    println!("    {}", e.payload);
+            let events = store.events(session).expect("read events");
+            if !interactive {
+                for e in events {
+                    println!("[{}] {:?} {}", e.ts, e.kind, e.summary);
+                    if e.payload.len() > 2 && e.payload != "{}" {
+                        println!("    {}", e.payload);
+                    }
+                }
+                return;
+            }
+            if events.is_empty() {
+                println!("session {session} has no hops");
+                return;
+            }
+            let mut r = mayday::replay::Replay::new(events);
+            println!("{}", r.render_current());
+            let stdin = std::io::stdin();
+            loop {
+                print!(
+                    "[{}/{}] enter=next b=back f=first l=last q=quit > ",
+                    r.position() + 1,
+                    r.len()
+                );
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                let mut line = String::new();
+                match stdin.read_line(&mut line) {
+                    Ok(0) => break, // EOF: stop cleanly
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                match line.trim() {
+                    "" => {
+                        if !r.next() {
+                            println!("(last hop)");
+                        } else {
+                            println!("{}", r.render_current());
+                        }
+                    }
+                    "b" => {
+                        if !r.back() {
+                            println!("(first hop)");
+                        } else {
+                            println!("{}", r.render_current());
+                        }
+                    }
+                    "f" => {
+                        r.first();
+                        println!("{}", r.render_current());
+                    }
+                    "l" => {
+                        r.last();
+                        println!("{}", r.render_current());
+                    }
+                    "q" => break,
+                    "?" | "help" => println!("enter=next, b=back, f=first, l=last, q=quit"),
+                    _ => println!("enter=next, b=back, f=first, l=last, q=quit"),
                 }
             }
         }

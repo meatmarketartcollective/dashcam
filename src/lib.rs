@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod derive;
 pub mod redact;
+pub mod replay;
 pub mod crypto;
 pub mod event;
 pub mod filediff;

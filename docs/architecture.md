@@ -46,3 +46,11 @@ the `X-Mayday-Agent` header on model API requests; every hop that agent
 produces (model turns, derived tool calls, error hops) carries `"agent"` in
 its payload. Agents that do not set the header record without an agent field,
 so nothing changes for a single-agent setup.
+
+## Interactive replay
+
+`mayday replay <session> --interactive` steps through the timeline one hop at
+a time: the full payload pretty-printed, then the state at that hop (every
+summary up to and including it) so a failed run reads like a story. Keys:
+enter next, `b` back, `f` first, `l` last, `q` quit. `mayday replay <session>`
+keeps the one-shot dump.
