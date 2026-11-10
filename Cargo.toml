@@ -1,0 +1,15 @@
+[package]
+name = "mayday"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A local flight recorder for agent sessions: every tool call, prompt, diff and model turn, in one queryable timeline."
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
