@@ -53,6 +53,12 @@ impl Store {
             },
         };
         conn.execute_batch(SCHEMA)?;
+        // Two mayday processes can share one timeline (two proxies, a CLI
+        // prune while a proxy records): WAL keeps readers from blocking the
+        // writer, and a busy timeout makes competing writers wait out each
+        // other's commits instead of failing with SQLITE_BUSY.
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+        let _ = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0));
         Ok(Self { conn: Mutex::new(conn), key })
     }
 
@@ -75,11 +81,23 @@ impl Store {
     }
 
     pub fn new_session(&self, note: Option<&str>) -> rusqlite::Result<i64> {
-        self.conn().execute(
+        // One lock hold across the insert and the rowid read: last_insert_rowid
+        // is connection-wide, so another thread's insert between the two
+        // statements would hand back the wrong id.
+        let conn = self.conn();
+        conn.execute(
             "INSERT INTO sessions (note) VALUES (?1)",
             [self.enc(note.unwrap_or_default()).as_str()],
         )?;
-        Ok(self.conn().last_insert_rowid())
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// How long (ms) this store waits out another writer's commit instead of
+    /// failing with SQLITE_BUSY.
+    pub fn busy_timeout_ms(&self) -> u64 {
+        let conn = self.conn.lock().expect("timeline lock");
+        conn.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as u64
     }
 
     pub fn append(
@@ -101,20 +119,29 @@ impl Store {
         summary: &str,
         payload: &str,
     ) -> rusqlite::Result<i64> {
-        let seq: i64 = self.conn().query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?1",
-            [session],
-            |r| r.get::<_, i64>(0),
-        )? + 1;
-        self.conn().execute(
-            "INSERT INTO events (session_id, seq, kind, summary, payload) VALUES (?1, ?2, ?3, ?4, ?5)",
+        // The seq is assigned inside the INSERT statement itself: SQLite
+        // evaluates the subquery while holding the write lock, so the next-seq
+        // read and the write are one atomic step. That holds across threads
+        // (the mutex serializes this connection) AND across separate mayday
+        // processes sharing the database file, which a read-then-insert pair
+        // would not.
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO events (session_id, seq, kind, summary, payload)
+             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?1), ?2, ?3, ?4)",
             rusqlite::params![
                 session,
-                seq,
                 kind_to_str(kind),
                 self.enc(summary),
                 self.enc(payload)
             ],
+        )?;
+        // Read back exactly the row we inserted by its rowid, which is exact
+        // no matter what other writers appended in the meantime.
+        let seq: i64 = conn.query_row(
+            "SELECT seq FROM events WHERE id = ?1",
+            [conn.last_insert_rowid()],
+            |r| r.get(0),
         )?;
         Ok(seq)
     }
