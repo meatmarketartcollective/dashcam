@@ -14,9 +14,32 @@ fn spawn_upstream() -> u16 {
                 Ok(s) => s,
                 Err(_) => break,
             };
+            // read until the full request body has arrived: under load the
+            // request can arrive in more than one TCP segment, and a single
+            // read echoes a truncated body
+            let mut buf: Vec<u8> = Vec::new();
             let mut chunk = [0u8; 8192];
-            let n = stream.read(&mut chunk).unwrap_or(0);
-            let text = String::from_utf8_lossy(&chunk[..n]).to_string();
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf);
+                let Some(pos) = text.find("\r\n\r\n") else { continue };
+                let headers = &text[..pos];
+                let cl = headers
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok());
+                match cl {
+                    Some(cl) if buf.len() >= pos + 4 + cl => break,
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
             let req_body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
             let resp_body = format!("{{\"echo\":{}}}", serde_json::json!(req_body));
             let response = format!(
@@ -91,9 +114,10 @@ fn record_binary_captures_end_to_end() {
     }
     let mut child = child_opt.expect("mayday record spawned");
 
-    // the harness points its API base URL at the proxy
+    // the harness points its API base URL at the proxy; on a loaded box the
+    // first few connections can fail while the listener settles
     let mut resp = None;
-    for _ in 0..10 {
+    for _ in 0..25 {
         if let Ok(r) = ureq::post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
             .set("Content-Type", "application/json")
             .send_string("{\"model\":\"stub\",\"messages\":[{\"role\":\"user\",\"content\":\"scripted-agent-ping\"}]}")
