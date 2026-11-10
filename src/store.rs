@@ -182,7 +182,7 @@ impl Store {
     pub fn prune(&self, policy: &RetentionPolicy) -> rusqlite::Result<PruneResult> {
         let conn = self.conn();
         let mut events_removed = 0i64;
-        let mut sessions_removed = 0i64;
+        let sessions_removed: i64;
 
         if let Some(days) = policy.max_age_days {
             events_removed += conn

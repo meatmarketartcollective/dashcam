@@ -1,6 +1,7 @@
 use mayday::capture;
 use mayday::key;
 use mayday::store::{RetentionPolicy, Store};
+use mayday::web;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -46,6 +47,12 @@ enum Command {
         /// Drop events from sessions older than this many days
         #[arg(long)]
         max_age_days: Option<i64>,
+    },
+    /// Browse the timeline in a local web page (read-only, 127.0.0.1 only)
+    Serve {
+        /// Local port for the viewer
+        #[arg(short, long, default_value = "8098")]
+        port: u16,
     },
     /// List sessions and their event counts
     Timeline,
@@ -102,6 +109,15 @@ fn main() {
             let policy = RetentionPolicy { max_events, max_age_days };
             let (events, sessions) = store.prune(&policy).expect("prune timeline");
             println!("pruned {events} events, {sessions} emptied sessions");
+        }
+        Command::Serve { port } => {
+            let store = Arc::new(open_store(&db_path));
+            println!("viewing http://127.0.0.1:{port}");
+            let running = Arc::new(AtomicBool::new(true));
+            if let Err(e) = web::serve(store, web::WebConfig { port }, running) {
+                eprintln!("viewer stopped: {e}");
+                std::process::exit(1);
+            }
         }
         Command::Timeline => {
             let store = open_store(&db_path);
