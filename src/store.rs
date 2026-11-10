@@ -164,6 +164,55 @@ impl Store {
     }
 }
 
+/// How much history the timeline keeps. Either limit may be None (no limit).
+pub struct RetentionPolicy {
+    /// Keep at most this many most-recent events across all sessions.
+    pub max_events: Option<i64>,
+    /// Drop events from sessions older than this many days.
+    pub max_age_days: Option<i64>,
+}
+
+/// (events removed, sessions removed)
+pub type PruneResult = (i64, i64);
+
+impl Store {
+    /// Apply a retention policy: oldest events go first; sessions left with
+    /// no events are removed too. Never touches live sessions' newest history
+    /// beyond what the policy asks for.
+    pub fn prune(&self, policy: &RetentionPolicy) -> rusqlite::Result<PruneResult> {
+        let conn = self.conn();
+        let mut events_removed = 0i64;
+        let mut sessions_removed = 0i64;
+
+        if let Some(days) = policy.max_age_days {
+            events_removed += conn
+                .execute(
+                    "DELETE FROM events WHERE session_id IN (
+                         SELECT id FROM sessions
+                         WHERE started_at < datetime('now', ?1))",
+                    [format!("-{days} days")],
+                )? as i64;
+        }
+        if let Some(max) = policy.max_events {
+            let total: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
+            if total > max {
+                events_removed += conn
+                    .execute(
+                        "DELETE FROM events WHERE id NOT IN (
+                             SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+                        [max],
+                    )? as i64;
+            }
+        }
+        // sessions left with no events are history that can no longer be replayed
+        sessions_removed = conn.execute(
+            "DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM events)",
+            [],
+        )? as i64;
+        Ok((events_removed, sessions_removed))
+    }
+}
+
 fn kind_to_str(k: EventKind) -> &'static str {
     match k {
         EventKind::ModelTurn => "model_turn",

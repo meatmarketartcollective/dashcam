@@ -8,6 +8,8 @@ pub struct ProxyConfig {
     pub port: u16,
     pub upstream: String,
     pub session: i64,
+    /// Applied after every recorded hop when set.
+    pub retention: Option<crate::store::RetentionPolicy>,
 }
 
 /// Forward every request to the upstream provider and record both directions
@@ -47,6 +49,9 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
         .to_string();
         let summary = format!("{method} /{path} -> {status}");
         let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
+        if let Some(policy) = &cfg.retention {
+            let _ = store.prune(policy);
+        }
 
         let response = tiny_http::Response::from_data(resp_body)
             .with_status_code(status)

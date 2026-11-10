@@ -1,6 +1,6 @@
 use mayday::capture;
 use mayday::key;
-use mayday::store::Store;
+use mayday::store::{RetentionPolicy, Store};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -31,6 +31,21 @@ enum Command {
         /// Human label for the session, e.g. the harness and task
         #[arg(short, long)]
         note: Option<String>,
+        /// Keep at most this many events in the timeline (oldest pruned)
+        #[arg(long)]
+        max_events: Option<i64>,
+        /// Drop events from sessions older than this many days
+        #[arg(long)]
+        max_age_days: Option<i64>,
+    },
+    /// Apply retention now: keep the newest history, prune the rest
+    Prune {
+        /// Keep at most this many events in the timeline
+        #[arg(long)]
+        max_events: Option<i64>,
+        /// Drop events from sessions older than this many days
+        #[arg(long)]
+        max_age_days: Option<i64>,
     },
     /// List sessions and their event counts
     Timeline,
@@ -64,7 +79,7 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { port, upstream, note } => {
+        Command::Record { port, upstream, note, max_events, max_age_days } => {
             let store = Arc::new(open_store(&db_path));
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
@@ -72,14 +87,21 @@ fn main() {
                 "point the harness's API base URL at http://127.0.0.1:{port} (plain HTTP to localhost; mayday makes the secure connection outward)"
             );
             let running = Arc::new(AtomicBool::new(true));
+            let retention = RetentionPolicy { max_events, max_age_days };
             if let Err(e) = capture::serve(
                 store,
-                capture::ProxyConfig { port, upstream, session: id },
+                capture::ProxyConfig { port, upstream, session: id, retention: Some(retention) },
                 running,
             ) {
                 eprintln!("capture stopped: {e}");
                 std::process::exit(1);
             }
+        }
+        Command::Prune { max_events, max_age_days } => {
+            let store = open_store(&db_path);
+            let policy = RetentionPolicy { max_events, max_age_days };
+            let (events, sessions) = store.prune(&policy).expect("prune timeline");
+            println!("pruned {events} events, {sessions} emptied sessions");
         }
         Command::Timeline => {
             let store = open_store(&db_path);

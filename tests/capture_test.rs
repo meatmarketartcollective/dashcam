@@ -54,6 +54,7 @@ fn proxied_turns_land_in_the_timeline() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
     };
     let s2 = store.clone();
     let r2 = running.clone();

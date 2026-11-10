@@ -1,5 +1,5 @@
 use mayday::event::EventKind;
-use mayday::store::Store;
+use mayday::store::{RetentionPolicy, Store};
 
 const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const K2: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
@@ -55,6 +55,45 @@ fn wrong_key_yields_no_readables() {
     let events = store.events(1).unwrap();
     assert!(!events[0].payload.contains("secret payload"));
     assert!(!events[0].summary.contains("secret summary"));
+}
+
+#[test]
+fn prune_keeps_the_newest_events_and_drops_emptied_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("t.db"), Some(K1)).unwrap();
+
+    let a = store.new_session(Some("old run")).unwrap();
+    for i in 1..=3 {
+        store.append(a, EventKind::Prompt, &format!("old hop {i}"), "{}").unwrap();
+    }
+    let b = store.new_session(Some("new run")).unwrap();
+    for i in 1..=2 {
+        store.append(b, EventKind::Prompt, &format!("new hop {i}"), "{}").unwrap();
+    }
+
+    let (events_removed, sessions_removed) =
+        store.prune(&RetentionPolicy { max_events: Some(2), max_age_days: None }).unwrap();
+    assert_eq!(events_removed, 3);
+    assert_eq!(sessions_removed, 1);
+
+    let sessions = store.sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].2.as_deref(), Some("new run"));
+    let events = store.events(sessions[0].0).unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|e| e.summary.contains("new hop")));
+}
+
+#[test]
+fn prune_with_no_limit_touches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("t.db"), Some(K1)).unwrap();
+    let s = store.new_session(Some("run")).unwrap();
+    store.append(s, EventKind::Prompt, "hop", "{}").unwrap();
+    let (events_removed, sessions_removed) =
+        store.prune(&RetentionPolicy { max_events: None, max_age_days: None }).unwrap();
+    assert_eq!((events_removed, sessions_removed), (0, 0));
+    assert_eq!(store.events(s).unwrap().len(), 1);
 }
 
 #[test]
