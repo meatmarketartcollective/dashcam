@@ -31,14 +31,18 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
         let method = rq.method().as_str().to_string();
         let path = rq.url().trim_start_matches('/').to_string();
         let mut content_type = String::new();
+        let mut auth_header = String::new();
         for h in rq.headers() {
             let name = h.field.as_str().as_str();
             if name.eq_ignore_ascii_case("content-type") {
                 content_type = h.value.as_str().to_string();
+            } else if name.eq_ignore_ascii_case("authorization") {
+                auth_header = h.value.as_str().to_string();
             }
         }
 
-        let (status, resp_body) = forward(&cfg.upstream, &method, &path, &content_type, &body);
+        let (status, resp_body) =
+            forward(&cfg.upstream, &method, &path, &content_type, &auth_header, &body);
         let payload = serde_json::json!({
             "method": method,
             "path": path,
@@ -61,13 +65,27 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
     Ok(())
 }
 
-fn forward(upstream: &str, method: &str, path: &str, content_type: &str, body: &[u8]) -> (u16, Vec<u8>) {
+fn forward(
+    upstream: &str,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    auth: &str,
+    body: &[u8],
+) -> (u16, Vec<u8>) {
     let url = format!("{}/{}", upstream.trim_end_matches('/'), path);
     let req = ureq::request(method, &url);
     let req = if content_type.is_empty() {
         req
     } else {
         req.set("Content-Type", content_type)
+    };
+    // The auth header is forwarded upstream but never recorded: the stored
+    // payload below holds bodies only, so a key still has nowhere to land.
+    let req = if auth.is_empty() {
+        req
+    } else {
+        req.set("Authorization", auth)
     };
     match req.send_bytes(body) {
         Ok(resp) => {

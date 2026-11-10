@@ -23,7 +23,16 @@ fn spawn_upstream() -> u16 {
             let n = stream.read(&mut chunk).unwrap_or(0);
             let text = String::from_utf8_lossy(&chunk[..n]).to_string();
             let req_body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-            let resp_body = format!("{{\"echo\":{}}}", serde_json::json!(req_body));
+            let auth = text
+                .lines()
+                .find(|l| l.to_lowercase().starts_with("authorization:"))
+                .map(|l| l.splitn(2, ':').nth(1).unwrap_or("").trim().to_string())
+                .unwrap_or_default();
+            let resp_body = format!(
+                "{{\"echo\":{},\"auth_received\":{}}}",
+                serde_json::json!(req_body),
+                serde_json::json!(auth)
+            );
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 resp_body.len(),
@@ -136,6 +145,9 @@ fn proxied_turns_land_in_the_timeline() {
     assert_eq!(resp.status(), 200);
     let text = resp.into_string().unwrap();
     assert!(text.contains("why did you do that"));
+    // the auth header must be forwarded upstream, not just dropped
+    assert!(text.contains("auth_received"));
+    assert!(text.contains("Bearer supersecrettoken123456"));
 
     let resp2 = ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
         .set("Content-Type", "application/json")
