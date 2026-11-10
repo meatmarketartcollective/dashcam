@@ -80,3 +80,16 @@ Missing arguments, unknown tools, unknown hops, and unknown sessions come
 back as `isError: true` results, never a crash. The summarize reader scopes
 its connection lock strictly: the store's connection is a non-reentrant
 mutex, so no reader may hold it across another reader call.
+
+## Retention completes: size cap and export-before-aging-out
+
+The retention policy now covers all three limits Casey named: count
+(`--max-events`), age (`--max-age-days`), and size (`--max-size`, stored
+bytes of the encrypted rows). The size cap drops oldest hops first until
+the timeline is under the cap.
+
+Nothing retention removes is lost silently: name `--export <file>` and
+every aged-out hop lands in that file first, one JSON line per hop,
+decrypted, payload embedded as parsed JSON. The file is appended to, so
+repeated prunes accumulate. `mayday export --session N [--out file]` does
+the same for a whole session on demand (stdout when no file is named).

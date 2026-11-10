@@ -234,6 +234,22 @@ pub struct RetentionPolicy {
     pub max_events: Option<i64>,
     /// Drop events from sessions older than this many days.
     pub max_age_days: Option<i64>,
+    /// Keep the timeline under this many stored bytes (oldest pruned first).
+    pub max_size_bytes: Option<i64>,
+    /// Before retention ages hops out, append them to this JSONL file so
+    /// pruning never destroys the only copy.
+    pub export_path: Option<std::path::PathBuf>,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_events: None,
+            max_age_days: None,
+            max_size_bytes: None,
+            export_path: None,
+        }
+    }
 }
 
 /// (events removed, sessions removed)
@@ -241,40 +257,192 @@ pub type PruneResult = (i64, i64);
 
 impl Store {
     /// Apply a retention policy: oldest events go first; sessions left with
-    /// no events are removed too. Never touches live sessions' newest history
-    /// beyond what the policy asks for.
-    pub fn prune(&self, policy: &RetentionPolicy) -> rusqlite::Result<PruneResult> {
+    /// no events are removed too. Events about to be aged out are exported
+    /// first when the policy names an export file, so pruning never destroys
+    /// the only copy of a hop.
+    pub fn prune(&self, policy: &RetentionPolicy) -> Result<PruneResult, String> {
+        use std::io::Write;
         let conn = self.conn();
-        let mut events_removed = 0i64;
-        let sessions_removed: i64;
+        let mut doomed: Vec<i64> = Vec::new();
 
         if let Some(days) = policy.max_age_days {
-            events_removed += conn
-                .execute(
-                    "DELETE FROM events WHERE session_id IN (
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id FROM events WHERE session_id IN (
                          SELECT id FROM sessions
                          WHERE started_at < datetime('now', ?1))",
-                    [format!("-{days} days")],
-                )? as i64;
-        }
-        if let Some(max) = policy.max_events {
-            let total: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
-            if total > max {
-                events_removed += conn
-                    .execute(
-                        "DELETE FROM events WHERE id NOT IN (
-                             SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
-                        [max],
-                    )? as i64;
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([format!("-{days} days")], |r| r.get::<_, i64>(0))
+                .map_err(|e| e.to_string())?;
+            for id in rows {
+                doomed.push(id.map_err(|e| e.to_string())?);
             }
         }
+        if let Some(max) = policy.max_events {
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            if total > max {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id FROM events WHERE id NOT IN (
+                             SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([max], |r| r.get::<_, i64>(0))
+                    .map_err(|e| e.to_string())?;
+                for id in rows {
+                    doomed.push(id.map_err(|e| e.to_string())?);
+                }
+            }
+        }
+        if let Some(cap) = policy.max_size_bytes {
+            let total: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(LENGTH(summary)+LENGTH(payload)),0) FROM events",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if total > cap {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, LENGTH(summary)+LENGTH(payload)
+                         FROM events ORDER BY id ASC",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                    })
+                    .map_err(|e| e.to_string())?;
+                let mut running = 0i64;
+                for row in rows {
+                    let (id, size) = row.map_err(|e| e.to_string())?;
+                    if running >= total - cap {
+                        break;
+                    }
+                    doomed.push(id);
+                    running += size;
+                }
+            }
+        }
+
+        doomed.sort_unstable();
+        doomed.dedup();
+
+        // export before aging out: each doomed hop lands as one readable
+        // JSONL line, appended so repeated prunes accumulate
+        if !doomed.is_empty() {
+            if let Some(path) = &policy.export_path {
+                let file = std::fs::File::options()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .map_err(|e| format!("export {}: {e}", path.display()))?;
+                let mut out = std::io::BufWriter::new(file);
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, session_id, seq, ts, kind, summary, payload
+                         FROM events WHERE id = ?1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                for id in &doomed {
+                    let row = stmt
+                        .query_row([id], |r| {
+                            Ok((
+                                r.get::<_, i64>(0)?,
+                                r.get::<_, i64>(1)?,
+                                r.get::<_, i64>(2)?,
+                                r.get::<_, String>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, String>(5)?,
+                                r.get::<_, String>(6)?,
+                            ))
+                        })
+                        .map_err(|e| e.to_string())?;
+                    let (id, session_id, seq, ts, kind, summary, payload) = row;
+                    let e = Event {
+                        id,
+                        session_id,
+                        seq,
+                        ts,
+                        kind: str_to_kind(&kind),
+                        summary: self.dec(&summary),
+                        payload: self.dec(&payload),
+                    };
+                    writeln!(out, "{}", event_jsonl(&e))
+                        .map_err(|e| format!("export write: {e}"))?;
+                }
+                out.flush().map_err(|e| format!("export write: {e}"))?;
+            }
+        }
+
+        let mut events_removed = 0i64;
+        for chunk in doomed.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            events_removed += conn
+                .execute(
+                    &format!("DELETE FROM events WHERE id IN ({placeholders})"),
+                    rusqlite::params_from_iter(chunk.iter()),
+                )
+                .map_err(|e| e.to_string())? as i64;
+        }
         // sessions left with no events are history that can no longer be replayed
-        sessions_removed = conn.execute(
-            "DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM events)",
-            [],
-        )? as i64;
+        let sessions_removed = conn
+            .execute(
+                "DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM events)",
+                [],
+            )
+            .map_err(|e| e.to_string())? as i64;
         Ok((events_removed, sessions_removed))
     }
+
+    /// Write one session's hops as JSON lines to `out`. Returns the number of
+    /// hops written. Errors when the session does not exist.
+    pub fn export_session(
+        &self,
+        session: i64,
+        out: &mut impl std::io::Write,
+    ) -> Result<usize, String> {
+        let exists: i64 = {
+            // scope the lock: no other reader may run while it is held
+            let conn = self.conn();
+            conn.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                [session],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if exists == 0 {
+            return Err(format!("no such session: {session}"));
+        }
+        let events = self.events(session).map_err(|e| e.to_string())?;
+        for e in &events {
+            writeln!(out, "{}", event_jsonl(e)).map_err(|e| format!("export write: {e}"))?;
+        }
+        Ok(events.len())
+    }
+}
+
+/// One hop as a JSON line for export files: decrypted, payload embedded as
+/// parsed JSON when it parses.
+pub fn event_jsonl(e: &Event) -> String {
+    let payload = serde_json::from_str::<serde_json::Value>(&e.payload)
+        .unwrap_or(serde_json::Value::String(e.payload.clone()));
+    serde_json::json!({
+        "session": e.session_id,
+        "seq": e.seq,
+        "ts": e.ts,
+        "kind": kind_to_str(e.kind),
+        "summary": e.summary,
+        "payload": payload,
+    })
+    .to_string()
 }
 
 fn kind_to_str(k: EventKind) -> &'static str {

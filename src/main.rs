@@ -38,6 +38,12 @@ enum Command {
         /// Drop events from sessions older than this many days
         #[arg(long)]
         max_age_days: Option<i64>,
+        /// Keep the timeline under this many stored bytes (oldest pruned)
+        #[arg(long)]
+        max_size: Option<i64>,
+        /// Before retention ages hops out, append them to this JSONL file
+        #[arg(long)]
+        export: Option<PathBuf>,
         /// Extra redaction rules, one regex per line; built-ins always on
         #[arg(short, long)]
         rules: Option<PathBuf>,
@@ -50,6 +56,21 @@ enum Command {
         /// Drop events from sessions older than this many days
         #[arg(long)]
         max_age_days: Option<i64>,
+        /// Keep the timeline under this many stored bytes (oldest pruned)
+        #[arg(long)]
+        max_size: Option<i64>,
+        /// Before retention ages hops out, append them to this JSONL file
+        #[arg(long)]
+        export: Option<PathBuf>,
+    },
+    /// Export one session's hops as JSON lines (readable plaintext)
+    Export {
+        /// Session id (see `mayday timeline`)
+        #[arg(short, long)]
+        session: i64,
+        /// Write to this file instead of stdout
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
     /// Browse the timeline in a local web page (read-only, 127.0.0.1 only)
     Serve {
@@ -102,7 +123,7 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { port, upstream, note, max_events, max_age_days, rules } => {
+        Command::Record { port, upstream, note, max_events, max_age_days, max_size, export, rules } => {
             let store = Arc::new(open_store(&db_path));
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
@@ -110,7 +131,12 @@ fn main() {
                 "point the harness's API base URL at http://127.0.0.1:{port} (plain HTTP to localhost; mayday makes the secure connection outward)"
             );
             let running = Arc::new(AtomicBool::new(true));
-            let retention = RetentionPolicy { max_events, max_age_days };
+            let retention = RetentionPolicy {
+                max_events,
+                max_age_days,
+                max_size_bytes: max_size,
+                export_path: export,
+            };
             let redactor = match &rules {
                 Some(path) => mayday::redact::Redactor::load(path),
                 None => mayday::redact::Redactor::builtin(),
@@ -124,9 +150,14 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Command::Prune { max_events, max_age_days } => {
+        Command::Prune { max_events, max_age_days, max_size, export } => {
             let store = open_store(&db_path);
-            let policy = RetentionPolicy { max_events, max_age_days };
+            let policy = RetentionPolicy {
+                max_events,
+                max_age_days,
+                max_size_bytes: max_size,
+                export_path: export,
+            };
             let (events, sessions) = store.prune(&policy).expect("prune timeline");
             println!("pruned {events} events, {sessions} emptied sessions");
         }
@@ -159,6 +190,19 @@ fn main() {
             let store = open_store(&db_path);
             for (id, started, note, events) in store.sessions().expect("list sessions") {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
+            }
+        }
+        Command::Export { session, out } => {
+            let store = open_store(&db_path);
+            let result = match &out {
+                Some(path) => std::fs::File::create(path)
+                    .map_err(|e| format!("{}: {e}", path.display()))
+                    .and_then(|mut f| store.export_session(session, &mut f)),
+                None => store.export_session(session, &mut std::io::stdout()),
+            };
+            if let Err(e) = result {
+                eprintln!("{e}");
+                std::process::exit(1);
             }
         }
         Command::Mcp => {

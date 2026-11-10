@@ -137,7 +137,7 @@ fn streaming_responses_are_captured_intact() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
         redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
@@ -191,7 +191,7 @@ fn proxied_turns_land_in_the_timeline() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
         redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
@@ -356,7 +356,7 @@ fn tool_calls_are_derived_from_recorded_turns() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
         redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
@@ -422,7 +422,7 @@ fn agent_header_is_recorded_on_hops() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
         redactor: mayday::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
