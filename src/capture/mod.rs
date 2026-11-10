@@ -112,8 +112,15 @@ pub fn scrub(s: &str) -> String {
         } else if s[i..].starts_with("Bearer ") {
             7
         } else {
-            out.extend_from_slice(&b[i..i + 1]);
-            i += 1;
+            // advance a full character: byte-by-byte would land i inside a
+            // multi-byte UTF-8 char and panic on the slice above
+            let ch_len = s[i..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
+            out.extend_from_slice(&b[i..i + ch_len]);
+            i += ch_len;
             continue;
         };
         out.extend_from_slice(&b[i..i + prefix_len]);

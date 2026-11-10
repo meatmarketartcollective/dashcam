@@ -111,6 +111,16 @@ fn streaming_responses_are_captured_intact() {
 }
 
 #[test]
+fn scrub_survives_multibyte_text() {
+    // a secret next to multi-byte UTF-8 must be redacted, not panic the proxy
+    let out = mayday::capture::scrub("reasoning says \u{2014} use sk-abcdef0123456789 here");
+    assert!(!out.contains("sk-abcdef0123456789"));
+    assert!(out.contains("[redacted]"));
+    assert!(out.contains('\u{2014}'));
+    assert!(mayday::capture::scrub("h\u{e9}llo w\u{f6}rld \u{1F43A}").contains('\u{1F43A}'));
+}
+
+#[test]
 fn proxied_turns_land_in_the_timeline() {
     let upstream_port = spawn_upstream();
 
