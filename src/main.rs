@@ -57,6 +57,14 @@ enum Command {
         #[arg(short, long, default_value = "8098")]
         port: u16,
     },
+    /// Record a file change into the session timeline (file boundary)
+    Diff {
+        /// File to record; a missing file with a prior snapshot records the deletion
+        path: PathBuf,
+        /// Session id (see `mayday timeline`)
+        #[arg(short, long)]
+        session: i64,
+    },
     /// List sessions and their event counts
     Timeline,
     /// Print every event of one session, oldest first
@@ -124,6 +132,22 @@ fn main() {
             if let Err(e) = web::serve(store, web::WebConfig { port }, running) {
                 eprintln!("viewer stopped: {e}");
                 std::process::exit(1);
+            }
+        }
+        Command::Diff { path, session } => {
+            let store = open_store(&db_path);
+            match mayday::filediff::record(&store, session, &path) {
+                Ok(out) => {
+                    if out.changed {
+                        println!("{}", out.summary);
+                    } else {
+                        println!("{} (unchanged, nothing recorded)", path.display());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
         }
         Command::Timeline => {

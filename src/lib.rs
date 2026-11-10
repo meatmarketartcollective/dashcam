@@ -3,6 +3,7 @@ pub mod derive;
 pub mod redact;
 pub mod crypto;
 pub mod event;
+pub mod filediff;
 pub mod key;
 pub mod store;
 pub mod web;
