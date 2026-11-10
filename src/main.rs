@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 #[command(name = "mayday", version, about = "Local flight recorder for agent sessions")]
 struct Cli {
     /// Path to the mayday timeline database (default: ~/.mayday/timeline.db)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     db: Option<PathBuf>,
 
     #[command(subcommand)]
