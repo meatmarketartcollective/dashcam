@@ -402,3 +402,51 @@ fn tool_calls_are_derived_from_recorded_turns() {
     let raw = String::from_utf8_lossy(&bytes);
     assert!(!raw.contains("sk-secret123456789012"));
 }
+
+/// Multi-agent trace propagation: an agent that sets X-Mayday-Agent gets its
+/// name stamped on every hop it produces; agents that do not get no agent key.
+#[test]
+fn agent_header_is_recorded_on_hops() {
+    let upstream_port = spawn_upstream();
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("t.db");
+    let store = Arc::new(Store::open(&db_path, Some(K)).unwrap());
+    let session = store.new_session(Some("two agents")).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let cfg = ProxyConfig {
+        port: proxy_port,
+        upstream: format!("http://127.0.0.1:{upstream_port}"),
+        session,
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+        redactor: mayday::redact::Redactor::builtin(),
+    };
+    let s2 = store.clone();
+    let r2 = running.clone();
+    thread::spawn(move || {
+        let _ = capture::serve(s2, cfg, r2);
+    });
+    wait_port(proxy_port);
+
+    ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
+        .set("Content-Type", "application/json")
+        .set("X-Mayday-Agent", "builder")
+        .send_string("{\"model\":\"stub\",\"messages\":[{\"role\":\"user\",\"content\":\"hop one\"}]}")
+        .unwrap();
+    ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
+        .set("Content-Type", "application/json")
+        .send_string("{\"model\":\"stub\",\"messages\":[{\"role\":\"user\",\"content\":\"hop two\"}]}")
+        .unwrap();
+
+    let events = wait_events(&store, session, 2);
+    running.store(false, Ordering::Relaxed);
+    assert_eq!(events.len(), 2);
+    let first: serde_json::Value = serde_json::from_str(&events[0].payload).unwrap();
+    assert_eq!(first["agent"], "builder");
+    let second: serde_json::Value = serde_json::from_str(&events[1].payload).unwrap();
+    assert!(second.get("agent").is_none());
+}

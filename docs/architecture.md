@@ -37,3 +37,12 @@ calls it after every file change. Edges are handled, not crashed on:
 Line diffs are LCS-based after common prefix/suffix trimming, falling back to
 remove-all/add-all when the changed middle exceeds the cell budget. Content
 and diff lines pass the always-on redactor before write.
+
+## Multi-agent trace propagation
+
+Any number of agents can share one proxy session: the timeline is safe for
+concurrent writers (WAL + atomic seq). To tell agents apart, a harness sets
+the `X-Mayday-Agent` header on model API requests; every hop that agent
+produces (model turns, derived tool calls, error hops) carries `"agent"` in
+its payload. Agents that do not set the header record without an agent field,
+so nothing changes for a single-agent setup.

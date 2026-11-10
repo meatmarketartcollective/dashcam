@@ -30,6 +30,7 @@ fn record_turn(
     request_body: &str,
     response_body: &str,
     streamed: bool,
+    agent: &str,
 ) {
     let mut payload = serde_json::json!({
         "method": method,
@@ -38,6 +39,9 @@ fn record_turn(
         "status": status,
         "response_body": cfg.redactor.scrub(response_body),
     });
+    if !agent.is_empty() {
+        payload["agent"] = serde_json::Value::String(agent.to_string());
+    }
     if streamed {
         payload["streamed"] = serde_json::Value::Bool(true);
     }
@@ -51,13 +55,16 @@ fn record_turn(
         .append_get_seq(cfg.session, EventKind::ModelTurn, &summary, &payload)
         .unwrap_or(0);
     for tc in crate::derive::tool_calls_from_response(response_body, streamed) {
-        let tc_payload = serde_json::json!({
+        let mut tc_payload = serde_json::json!({
             "tool": tc.name,
             "call_id": tc.id,
             "arguments": cfg.redactor.scrub(&tc.arguments),
             "from_hop": turn_seq,
-        })
-        .to_string();
+        });
+        if !agent.is_empty() {
+            tc_payload["agent"] = serde_json::Value::String(agent.to_string());
+        }
+        let tc_payload = tc_payload.to_string();
         let tc_summary = format!("tool_call {}", tc.name);
         let _ = store.append(
             cfg.session,
@@ -93,12 +100,16 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
         let path = rq.url().trim_start_matches('/').to_string();
         let mut content_type = String::new();
         let mut auth_header = String::new();
+        let mut agent = String::new();
         for h in rq.headers() {
             let name = h.field.as_str().as_str();
             if name.eq_ignore_ascii_case("content-type") {
                 content_type = h.value.as_str().to_string();
             } else if name.eq_ignore_ascii_case("authorization") {
                 auth_header = h.value.as_str().to_string();
+            } else if name.eq_ignore_ascii_case("x-mayday-agent") {
+                // multi-agent trace propagation: which agent produced this hop
+                agent = h.value.as_str().trim().to_string();
             }
         }
 
@@ -139,6 +150,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         &String::from_utf8_lossy(&body),
                         &String::from_utf8_lossy(&captured),
                         true,
+                        &agent,
                     );
                 } else {
                     let mut resp_body = Vec::new();
@@ -152,6 +164,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         &String::from_utf8_lossy(&body),
                         &String::from_utf8_lossy(&resp_body),
                         false,
+                        &agent,
                     );
                     let response = tiny_http::Response::from_data(resp_body)
                         .with_status_code(status)
@@ -171,6 +184,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                     "request_body": cfg.redactor.scrub(&String::from_utf8_lossy(&body)),
                     "status": 502,
                     "response_body": &msg,
+                    "agent": if agent.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(agent.clone()) },
                 })
                 .to_string();
                 let summary = format!("{method} /{path} -> 502");
