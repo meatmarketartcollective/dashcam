@@ -2,7 +2,7 @@ use crate::event::EventKind;
 use crate::store::Store;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct ProxyConfig {
     pub port: u16,
@@ -15,9 +15,11 @@ pub struct ProxyConfig {
 /// Forward every request to the upstream provider and record both directions
 /// as one model_turn event per exchange.
 ///
-/// Redaction is always on: request and response bodies are scrubbed of
-/// token-shaped secrets at write time, and headers are never recorded at all,
-/// so an API key has nowhere to land in the timeline.
+/// Streaming (text/event-stream) responses are passed through chunk by chunk
+/// while the assembled body is still recorded as one hop, so replay shows the
+/// full turn. Redaction is always on: request and response bodies are scrubbed
+/// of token-shaped secrets at write time, and headers are never recorded at
+/// all, so an API key has nowhere to land in the timeline.
 pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> Result<(), String> {
     let server = tiny_http::Server::http(("127.0.0.1", cfg.port))
         .map_err(|e| format!("cannot bind capture port: {e}"))?;
@@ -41,38 +43,105 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
             }
         }
 
-        let (status, resp_body) =
-            forward(&cfg.upstream, &method, &path, &content_type, &auth_header, &body);
-        let payload = serde_json::json!({
-            "method": method,
-            "path": path,
-            "request_body": scrub(&String::from_utf8_lossy(&body)),
-            "status": status,
-            "response_body": scrub(&String::from_utf8_lossy(&resp_body)),
-        })
-        .to_string();
-        let summary = format!("{method} /{path} -> {status}");
-        let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
-        if let Some(policy) = &cfg.retention {
-            let _ = store.prune(policy);
+        match send_upstream(
+            &cfg.upstream, &method, &path, &content_type, &auth_header, &body,
+        ) {
+            Ok(resp) => {
+                let status = resp.status();
+                let upstream_ct = resp.content_type().to_string();
+                if upstream_ct.contains("text/event-stream") {
+                    // Stream mode: forward chunks live to the client while a
+                    // shared buffer assembles the full body for the timeline.
+                    let acc: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+                    let reader = RecordingReader {
+                        inner: resp.into_reader(),
+                        buf: Arc::clone(&acc),
+                    };
+                    let ct_header =
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], upstream_ct.as_bytes())
+                            .unwrap();
+                    // data_length None: the body length is unknown while it
+                    // streams, so tiny_http answers HTTP/1.1 clients chunked.
+                    let response = tiny_http::Response::new(
+                        tiny_http::StatusCode(status),
+                        vec![ct_header],
+                        reader,
+                        None,
+                        None,
+                    );
+                    let _ = rq.respond(response);
+                    let captured = acc.lock().expect("stream buffer").clone();
+                    let payload = serde_json::json!({
+                        "method": method,
+                        "path": path,
+                        "request_body": scrub(&String::from_utf8_lossy(&body)),
+                        "status": status,
+                        "response_body": scrub(&String::from_utf8_lossy(&captured)),
+                        "streamed": true,
+                    })
+                    .to_string();
+                    let summary = format!("{method} /{path} -> {status} (streamed)");
+                    let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
+                    if let Some(policy) = &cfg.retention {
+                        let _ = store.prune(policy);
+                    }
+                } else {
+                    let mut resp_body = Vec::new();
+                    let _ = resp.into_reader().read_to_end(&mut resp_body);
+                    let payload = serde_json::json!({
+                        "method": method,
+                        "path": path,
+                        "request_body": scrub(&String::from_utf8_lossy(&body)),
+                        "status": status,
+                        "response_body": scrub(&String::from_utf8_lossy(&resp_body)),
+                    })
+                    .to_string();
+                    let summary = format!("{method} /{path} -> {status}");
+                    let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
+                    if let Some(policy) = &cfg.retention {
+                        let _ = store.prune(policy);
+                    }
+                    let response = tiny_http::Response::from_data(resp_body)
+                        .with_status_code(status)
+                        .with_header(tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json"[..],
+                        )
+                        .unwrap());
+                    let _ = rq.respond(response);
+                }
+            }
+            Err(e) => {
+                let msg = format!("{{\"mayday_upstream_error\":\"{e}\"}}");
+                let payload = serde_json::json!({
+                    "method": method,
+                    "path": path,
+                    "request_body": scrub(&String::from_utf8_lossy(&body)),
+                    "status": 502,
+                    "response_body": &msg,
+                })
+                .to_string();
+                let summary = format!("{method} /{path} -> 502");
+                let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload);
+                if let Some(policy) = &cfg.retention {
+                    let _ = store.prune(policy);
+                }
+                let response = tiny_http::Response::from_string(msg).with_status_code(502);
+                let _ = rq.respond(response);
+            }
         }
-
-        let response = tiny_http::Response::from_data(resp_body)
-            .with_status_code(status)
-            .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-        let _ = rq.respond(response);
     }
     Ok(())
 }
 
-fn forward(
+fn send_upstream(
     upstream: &str,
     method: &str,
     path: &str,
     content_type: &str,
     auth: &str,
     body: &[u8],
-) -> (u16, Vec<u8>) {
+) -> Result<ureq::Response, String> {
     let url = format!("{}/{}", upstream.trim_end_matches('/'), path);
     let req = ureq::request(method, &url);
     let req = if content_type.is_empty() {
@@ -81,23 +150,27 @@ fn forward(
         req.set("Content-Type", content_type)
     };
     // The auth header is forwarded upstream but never recorded: the stored
-    // payload below holds bodies only, so a key still has nowhere to land.
+    // payload holds bodies only, so a key still has nowhere to land.
     let req = if auth.is_empty() {
         req
     } else {
         req.set("Authorization", auth)
     };
-    match req.send_bytes(body) {
-        Ok(resp) => {
-            let status = resp.status();
-            let mut out = Vec::new();
-            let _ = resp.into_reader().read_to_end(&mut out);
-            (status, out)
-        }
-        Err(e) => {
-            let msg = format!("{{\"mayday_upstream_error\":\"{}\"}}", e);
-            (502, msg.into_bytes())
-        }
+    req.send_bytes(body).map_err(|e| e.to_string())
+}
+
+/// A Read that forwards upstream bytes to the HTTP client as they arrive
+/// while accumulating everything for the timeline write after the response.
+struct RecordingReader<R: Read> {
+    inner: R,
+    buf: Arc<Mutex<Vec<u8>>>,
+}
+
+impl<R: Read> Read for RecordingReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(out)?;
+        self.buf.lock().expect("stream buffer").extend_from_slice(&out[..n]);
+        Ok(n)
     }
 }
 

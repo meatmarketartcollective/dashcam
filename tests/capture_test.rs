@@ -195,3 +195,77 @@ fn proxied_turns_land_in_the_timeline() {
     assert!(!raw.contains("supersecrettoken123456"));
     assert!(!raw.contains("why did you do that"));
 }
+
+/// SSE upstream: streams three data events with small gaps, then closes.
+fn spawn_sse_upstream() -> u16 {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut chunk = [0u8; 8192];
+            let _ = stream.read(&mut chunk);
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(head.as_bytes());
+            for part in ["data: alpha\n\n", "data: beta\n\n", "data: gamma\n\n"] {
+                thread::sleep(Duration::from_millis(30));
+                let _ = stream.write_all(part.as_bytes());
+                let _ = stream.flush();
+            }
+            // dropping the stream closes it: the SSE body ends at EOF
+        }
+    });
+    port
+}
+
+#[test]
+fn sse_turns_stream_through_and_record_assembled() {
+    use std::io::Read as _;
+    use std::sync::atomic::AtomicBool;
+
+    let up = spawn_sse_upstream();
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("t.db"), Some(K)).unwrap());
+    let s = store.new_session(Some("sse run")).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let port = 23000 + (std::process::id() % 20000) as u16;
+    let store2 = store.clone();
+    thread::spawn(move || {
+        let _ = capture::serve(
+            store2,
+            ProxyConfig {
+                port,
+                upstream: format!("http://127.0.0.1:{up}"),
+                session: s,
+                retention: None,
+            },
+            running,
+        );
+    });
+    wait_port(port);
+
+    // the client receives every streamed chunk, in order
+    let resp = ureq::post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .set("Content-Type", "application/json")
+        .send_string("{\"model\":\"stub\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"sse-ping\"}]}")
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.content_type().contains("text/event-stream"));
+    let mut body = String::new();
+    resp.into_reader().read_to_string(&mut body).unwrap();
+    for part in ["alpha", "beta", "gamma"] {
+        assert!(body.contains(part), "streamed body missing {part}");
+    }
+
+    // and the timeline still records ONE hop with the assembled body
+    let events = store.events(s).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].payload.contains("alpha"));
+    assert!(events[0].payload.contains("gamma"));
+    assert!(events[0].payload.contains("\"streamed\":true"));
+    assert!(events[0].summary.contains("streamed"));
+}
