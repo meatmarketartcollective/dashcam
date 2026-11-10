@@ -36,6 +36,71 @@ fn spawn_upstream() -> u16 {
     port
 }
 
+/// An SSE upstream (chunked streaming, what real providers send): the proxy
+/// must pass it through and record the reassembled stream.
+#[test]
+fn streaming_responses_are_captured_intact() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            let mut chunk = [0u8; 8192];
+            let _ = stream.read(&mut chunk);
+            let mut out = String::new();
+            out.push_str("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n");
+            for piece in ["data: {\"delta\":\"step one\"}\n\n", "data: {\"delta\":\"step two\"}\n\n"] {
+                out.push_str(&format!("{:x}\r
+{}\r\n", piece.len(), piece));
+            }
+            out.push_str("0\r\n\r\n");
+            let _ = stream.write_all(out.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("t.db");
+    let store = Arc::new(Store::open(&db_path, Some(K)).unwrap());
+    let session = store.new_session(Some("streaming harness")).unwrap();
+
+    let listener2 = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = listener2.local_addr().unwrap().port();
+    drop(listener2);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let cfg = ProxyConfig {
+        port: proxy_port,
+        upstream: format!("http://127.0.0.1:{port}"),
+        session,
+        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None }),
+    };
+    let s2 = store.clone();
+    let r2 = running.clone();
+    thread::spawn(move || {
+        let _ = capture::serve(s2, cfg, r2);
+    });
+    thread::sleep(Duration::from_millis(300));
+
+    let resp = ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
+        .set("Content-Type", "application/json")
+        .send_string("{}")
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let text = resp.into_string().unwrap();
+    assert!(text.contains("step one"));
+    assert!(text.contains("step two"));
+
+    running.store(false, Ordering::Relaxed);
+    let events = store.events(session).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].payload.contains("step one"));
+    assert!(events[0].payload.contains("step two"));
+}
+
 #[test]
 fn proxied_turns_land_in_the_timeline() {
     let upstream_port = spawn_upstream();
