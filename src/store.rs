@@ -162,6 +162,31 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// Search every session's decrypted summaries and payloads for `query`
+    /// (case-insensitive substring). Returns (session_id, event) pairs, at
+    /// most 100, in session then seq order.
+    pub fn search_timeline(&self, query: &str) -> rusqlite::Result<Vec<(i64, Event)>> {
+        let q = query.to_lowercase();
+        let mut out = Vec::new();
+        if q.is_empty() {
+            return Ok(out);
+        }
+        for (id, _started, _note, _count) in self.sessions()? {
+            if out.len() >= 100 {
+                break;
+            }
+            for e in self.events(id)? {
+                if e.summary.to_lowercase().contains(&q) || e.payload.to_lowercase().contains(&q) {
+                    out.push((id, e));
+                    if out.len() >= 100 {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// How much history the timeline keeps. Either limit may be None (no limit).
