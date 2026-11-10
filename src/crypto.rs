@@ -19,7 +19,8 @@ pub fn encrypt(key: &[u8], plaintext: &str) -> String {
 /// Decrypt base64(nonce || ciphertext). None means wrong key or damaged blob.
 pub fn decrypt(key: &[u8], blob: &str) -> Option<String> {
     let raw = B64.decode(blob).ok()?;
-    if raw.len() < 13 {
+    if raw.len() < 28 {
+        // nonce (12) + at least one block with its auth tag (16)
         return None;
     }
     let (nonce, ct) = raw.split_at(12);

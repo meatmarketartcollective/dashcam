@@ -127,9 +127,17 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         inner: resp.into_reader(),
                         buf: Arc::clone(&acc),
                     };
-                    let ct_header =
-                        tiny_http::Header::from_bytes(&b"Content-Type"[..], upstream_ct.as_bytes())
-                            .unwrap();
+                    let ct_header = tiny_http::Header::from_bytes(
+                        &b"Content-Type"[..],
+                        upstream_ct.as_bytes(),
+                    )
+                    .unwrap_or_else(|_| {
+                        tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/octet-stream"[..],
+                        )
+                        .expect("static header")
+                    });
                     // data_length None: the body length is unknown while it
                     // streams, so tiny_http answers HTTP/1.1 clients chunked.
                     let response = tiny_http::Response::new(
@@ -168,11 +176,13 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                     );
                     let response = tiny_http::Response::from_data(resp_body)
                         .with_status_code(status)
-                        .with_header(tiny_http::Header::from_bytes(
-                            &b"Content-Type"[..],
-                            &b"application/json"[..],
-                        )
-                        .unwrap());
+                        .with_header(
+                            tiny_http::Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/json"[..],
+                            )
+                            .expect("static header"),
+                        );
                     let _ = rq.respond(response);
                 }
             }

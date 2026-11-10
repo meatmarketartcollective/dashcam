@@ -4,6 +4,8 @@ use mayday::store::{RetentionPolicy, Store};
 use mayday::web;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -195,7 +197,12 @@ fn main() {
         Command::Export { session, out } => {
             let store = open_store(&db_path);
             let result = match &out {
-                Some(path) => std::fs::File::create(path)
+                Some(path) => std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(path)
                     .map_err(|e| format!("{}: {e}", path.display()))
                     .and_then(|mut f| store.export_session(session, &mut f)),
                 None => store.export_session(session, &mut std::io::stdout()),
@@ -237,7 +244,6 @@ fn main() {
                     r.position() + 1,
                     r.len()
                 );
-                use std::io::Write;
                 let _ = std::io::stdout().flush();
                 let mut line = String::new();
                 match stdin.read_line(&mut line) {

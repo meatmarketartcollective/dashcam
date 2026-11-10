@@ -1,6 +1,7 @@
 use crate::crypto;
 use crate::event::{Event, EventKind};
 use rusqlite::Connection;
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Mutex;
 
 /// The timeline. Every session is one agent run; every event is one hop.
@@ -338,9 +339,10 @@ impl Store {
         // JSONL line, appended so repeated prunes accumulate
         if !doomed.is_empty() {
             if let Some(path) = &policy.export_path {
-                let file = std::fs::File::options()
+                let file = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
+                    .mode(0o600)
                     .open(path)
                     .map_err(|e| format!("export {}: {e}", path.display()))?;
                 let mut out = std::io::BufWriter::new(file);
