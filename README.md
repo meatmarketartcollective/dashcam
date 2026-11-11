@@ -59,7 +59,7 @@ can browse the timeline instead of only tool-calling.
 
 ## Multi-agent traces
 
-A harness that stamps an `X-Mayday-Agent` header on its API calls gets that
+A harness that stamps an `X-Dashcam-Agent` header on its API calls gets that
 identity recorded on every hop, so one timeline can show which agent did
 what.
 

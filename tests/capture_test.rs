@@ -403,7 +403,7 @@ fn tool_calls_are_derived_from_recorded_turns() {
     assert!(!raw.contains("sk-secret123456789012"));
 }
 
-/// Multi-agent trace propagation: an agent that sets X-Mayday-Agent gets its
+/// Multi-agent trace propagation: an agent that sets X-Dashcam-Agent gets its
 /// name stamped on every hop it produces; agents that do not get no agent key.
 #[test]
 fn agent_header_is_recorded_on_hops() {
@@ -434,7 +434,7 @@ fn agent_header_is_recorded_on_hops() {
 
     ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
         .set("Content-Type", "application/json")
-        .set("X-Mayday-Agent", "builder")
+        .set("X-Dashcam-Agent", "builder")
         .send_string("{\"model\":\"stub\",\"messages\":[{\"role\":\"user\",\"content\":\"hop one\"}]}")
         .unwrap();
     ureq::post(&format!("http://127.0.0.1:{proxy_port}/v1/chat/completions"))
