@@ -1,6 +1,6 @@
-use mayday::event::EventKind;
-use mayday::mcp::Mcp;
-use mayday::store::Store;
+use dashcam::event::EventKind;
+use dashcam::mcp::Mcp;
+use dashcam::store::Store;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -126,7 +126,7 @@ fn mcp_initialize_and_tools_list() {
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
     );
     assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(init["result"]["serverInfo"]["name"], "mayday");
+    assert_eq!(init["result"]["serverInfo"]["name"], "dashcam");
     // the initialized notification owes no response
     assert!(mcp
         .handle_line(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
@@ -253,7 +253,7 @@ fn rpc_parse_err(mcp: &Mcp) -> Value {
 fn mcp_stdio_binary_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("timeline.db");
-    // seed the encrypted db and its key file exactly as mayday leaves them
+    // seed the encrypted db and its key file exactly as dashcam leaves them
     let store = Store::open(&db, Some("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")).unwrap();
     let s1 = store.new_session(Some("mcp e2e")).unwrap();
     store
@@ -268,20 +268,20 @@ fn mcp_stdio_binary_end_to_end() {
         )
         .unwrap();
     drop(store);
-    // the binary loads its key from <db dir>/key, exactly as mayday leaves it
+    // the binary loads its key from <db dir>/key, exactly as dashcam leaves it
     std::fs::write(
         dir.path().join("key"),
         "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\n",
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mayday"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dashcam"))
         .args(["--db", db.to_str().unwrap(), "mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn mayday mcp");
+        .expect("spawn dashcam mcp");
 
     let mut stdin = child.stdin.take().unwrap();
     writeln!(
@@ -316,7 +316,7 @@ fn mcp_stdio_binary_end_to_end() {
     // exactly three responses: the notification owed none
     assert_eq!(lines.len(), 3, "{lines:?}");
     let r1: Value = serde_json::from_str(&lines[0]).unwrap();
-    assert_eq!(r1["result"]["serverInfo"]["name"], "mayday");
+    assert_eq!(r1["result"]["serverInfo"]["name"], "dashcam");
     let r2: Value = serde_json::from_str(&lines[1]).unwrap();
     let text = r2["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("mcp e2e") && text.contains("2 hops"), "{text}");
@@ -336,7 +336,7 @@ fn resources_list_names_every_session() {
     assert_eq!(resources.len(), 1);
     assert_eq!(
         resources[0]["uri"],
-        format!("mayday://session/{s1}")
+        format!("dashcam://session/{s1}")
     );
     assert_eq!(resources[0]["name"], "scripted agent");
     assert!(resources[0]["description"]
@@ -353,7 +353,7 @@ fn reading_a_session_resource_returns_the_summary() {
         "jsonrpc": "2.0",
         "id": 31,
         "method": "resources/read",
-        "params": { "uri": format!("mayday://session/{s1}") },
+        "params": { "uri": format!("dashcam://session/{s1}") },
     })
     .to_string();
     let resp = rpc(&mcp, &line);
@@ -372,7 +372,7 @@ fn reading_a_hop_resource_returns_its_full_record() {
         "jsonrpc": "2.0",
         "id": 32,
         "method": "resources/read",
-        "params": { "uri": format!("mayday://session/{s1}/hops/2") },
+        "params": { "uri": format!("dashcam://session/{s1}/hops/2") },
     })
     .to_string();
     let resp = rpc(&mcp, &line);
@@ -388,11 +388,11 @@ fn unknown_or_malformed_resource_uris_are_rejected() {
     let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
     for (id, uri) in [
-        (40, "mayday://other/thing"),
-        (41, "mayday://session/999"),
-        (42, "mayday://session/notanumber"),
-        (43, "mayday://session/1/branch/2"),
-        (44, "mayday://session/1/hops/notanumber"),
+        (40, "dashcam://other/thing"),
+        (41, "dashcam://session/999"),
+        (42, "dashcam://session/notanumber"),
+        (43, "dashcam://session/1/branch/2"),
+        (44, "dashcam://session/1/hops/notanumber"),
     ] {
         let line = json!({
             "jsonrpc": "2.0",
@@ -483,7 +483,7 @@ fn concurrent_readers_and_a_writer_do_not_deadlock() {
                         r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#.to_string(),
                         format!(r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"search_timeline","arguments":{{"session":{s1},"query":"stress"}}}}}}"#),
                         format!(r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"summarize_session","arguments":{{"session":{s1}}}}}}}"#),
-                        format!(r#"{{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{{"uri":"mayday://session/{s1}/hops/1"}}}}"#),
+                        format!(r#"{{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{{"uri":"dashcam://session/{s1}/hops/1"}}}}"#),
                     ] {
                         let resp = mcp.handle_line(&line).expect("readers get responses");
                         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -513,12 +513,12 @@ fn invalid_utf8_on_stdio_does_not_kill_the_server() {
     drop(store);
     std::fs::write(dir.path().join("key"), "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899\n").unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mayday"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dashcam"))
         .args(["--db", db.to_str().unwrap(), "mcp"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("spawn mayday mcp");
+        .expect("spawn dashcam mcp");
 
     use std::io::Write;
     let mut stdin = child.stdin.take().unwrap();
@@ -538,7 +538,7 @@ fn invalid_utf8_on_stdio_does_not_kill_the_server() {
     let r1: Value = serde_json::from_str(&lines[0]).unwrap();
     assert_eq!(r1["error"]["code"], -32700, "the bad bytes owe a parse error");
     let r2: Value = serde_json::from_str(&lines[1]).unwrap();
-    assert_eq!(r2["result"]["serverInfo"]["name"], "mayday", "the server kept serving");
+    assert_eq!(r2["result"]["serverInfo"]["name"], "dashcam", "the server kept serving");
 
     let _ = child.kill();
     let _ = child.wait();

@@ -1,5 +1,5 @@
-use mayday::filediff;
-use mayday::store::Store;
+use dashcam::filediff;
+use dashcam::store::Store;
 use serde_json::Value;
 use std::fs;
 

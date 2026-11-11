@@ -1,6 +1,6 @@
-# mayday
+# dashcam
 
-A vendor-neutral local flight recorder for AI agent sessions. mayday sits
+A vendor-neutral local flight recorder for AI agent sessions. dashcam sits
 beside any agent harness and passively records what the agent actually did:
 the model API boundary, the tool calls, the file changes. Then it replays any
 session hop by hop, showing the state at each step, so a run that went wrong
@@ -15,7 +15,7 @@ written. Headers are never recorded at all.
 
 Record a session by pointing the harness's API base URL at the proxy:
 
-    mayday record --upstream https://api.openai.com --note "my agent, task X"
+    dashcam record --upstream https://api.openai.com --note "my agent, task X"
 
 The proxy forwards to the real provider, records both directions as one hop
 per turn, and derives tool-call hops from the responses. Streaming
@@ -24,14 +24,14 @@ one complete hop.
 
 Read the timeline:
 
-    mayday timeline                      # sessions and hop counts
-    mayday replay --session 1            # every hop, oldest first
-    mayday replay --session 1 --interactive   # step through, state at each hop
-    mayday serve --port 8098             # browse in a local web page
+    dashcam timeline                      # sessions and hop counts
+    dashcam replay --session 1            # every hop, oldest first
+    dashcam replay --session 1 --interactive   # step through, state at each hop
+    dashcam serve --port 8098             # browse in a local web page
 
 Record file changes at the file boundary:
 
-    mayday diff src/main.rs --session 1
+    dashcam diff src/main.rs --session 1
 
 ## How it keeps itself safe
 
@@ -43,18 +43,18 @@ Record file changes at the file boundary:
   `--max-size` (stored bytes). Oldest go first, and emptied sessions go
   with them.
 - **Export before aging out.** `--export file` makes retention append every
-  aged-out hop to that file as readable JSONL first; `mayday export
+  aged-out hop to that file as readable JSONL first; `dashcam export
   --session 1` does the same for a whole session on demand.
 
 ## Scan it from an agent
 
-`mayday mcp` speaks the Model Context Protocol on stdio, read-only, local
+`dashcam mcp` speaks the Model Context Protocol on stdio, read-only, local
 only. Point an MCP client at the binary and it can list sessions, walk
 hops, search the timeline, pull any hop or file diff, and summarize a
 session: list_sessions, list_hops, search_timeline, get_hop, get_diff,
 summarize_session. It also speaks resources: one resource per session
-(`mayday://session/1` reads back that session's summary, and
-`mayday://session/1/hops/2` reads back one hop's full record), so an agent
+(`dashcam://session/1` reads back that session's summary, and
+`dashcam://session/1/hops/2` reads back one hop's full record), so an agent
 can browse the timeline instead of only tool-calling.
 
 ## Multi-agent traces

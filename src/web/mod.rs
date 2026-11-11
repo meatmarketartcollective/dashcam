@@ -74,17 +74,17 @@ pub fn render_index(store: &Store) -> String {
                 ));
             }
             let body = format!(
-                "<h1>mayday</h1><p class=\"muted\">local flight recorder · sessions on this machine</p>{}\
+                "<h1>dashcam</h1><p class=\"muted\">local flight recorder · sessions on this machine</p>{}\
                  <table><tr><th>session</th><th>started</th><th>note</th><th>hops</th></tr>{rows}</table>",
                 search_form()
             );
-            page("mayday · sessions", &body)
+            page("dashcam · sessions", &body)
         }
         Ok(_) => page(
-            "mayday",
-            &format!("<h1>mayday</h1><p class=\"muted\">no sessions recorded yet</p>{}", search_form()),
+            "dashcam",
+            &format!("<h1>dashcam</h1><p class=\"muted\">no sessions recorded yet</p>{}", search_form()),
         ),
-        Err(e) => page("mayday", &format!("<h1>mayday</h1><p>error reading timeline: {e}</p>")),
+        Err(e) => page("dashcam", &format!("<h1>dashcam</h1><p>error reading timeline: {e}</p>")),
     }
 }
 
@@ -108,9 +108,9 @@ pub fn render_session(store: &Store, session: i64) -> String {
                     summary = escape(&e.summary),
                 ));
             }
-            page(&format!("mayday · session {session}"), &body)
+            page(&format!("dashcam · session {session}"), &body)
         }
-        Err(e) => page("mayday", &format!("<h1>mayday</h1><p>error: {e}</p>")),
+        Err(e) => page("dashcam", &format!("<h1>dashcam</h1><p>error: {e}</p>")),
     }
 }
 
@@ -120,12 +120,12 @@ pub fn render_session(store: &Store, session: i64) -> String {
 pub fn render_hop(store: &Store, session: i64, seq: i64) -> String {
     let events = match store.events(session) {
         Ok(e) => e,
-        Err(e) => return page("mayday", &format!("<h1>mayday</h1><p>error: {e}</p>")),
+        Err(e) => return page("dashcam", &format!("<h1>dashcam</h1><p>error: {e}</p>")),
     };
     let Some(idx) = events.iter().position(|e| e.seq == seq) else {
         return page(
-            "mayday",
-            &format!("<h1>mayday</h1><p class=\"muted\"><a href=\"/session/{session}\">&larr; session {session}</a></p><p>hop {seq} not found</p>"),
+            "dashcam",
+            &format!("<h1>dashcam</h1><p class=\"muted\"><a href=\"/session/{session}\">&larr; session {session}</a></p><p>hop {seq} not found</p>"),
         );
     };
     let hop = &events[idx];
@@ -179,7 +179,7 @@ pub fn render_hop(store: &Store, session: i64, seq: i64) -> String {
         summary = escape(&hop.summary),
         payload = escape(&pretty(&hop.payload)),
     );
-    page(&format!("mayday · session {session} · hop {seq}"), &body)
+    page(&format!("dashcam · session {session} · hop {seq}"), &body)
 }
 
 pub fn render_search(store: &Store, q: &str) -> String {
@@ -208,7 +208,7 @@ pub fn render_search(store: &Store, q: &str) -> String {
         }
         Err(e) => body.push_str(&format!("<p>error: {e}</p>")),
     }
-    page("mayday · search", &body)
+    page("dashcam · search", &body)
 }
 
 /// Minimal percent-decoding for the one query parameter the viewer takes.
@@ -270,15 +270,15 @@ pub fn serve(store: Arc<Store>, cfg: WebConfig, running: Arc<AtomicBool>) -> std
             match rest.split_once("/hop/") {
                 Some((sid, hseq)) => match (sid.parse::<i64>(), hseq.parse::<i64>()) {
                     (Ok(id), Ok(sq)) => (render_hop(&store, id, sq), 200),
-                    _ => (page("mayday", "<h1>mayday</h1><p>bad session or hop id</p>"), 400),
+                    _ => (page("dashcam", "<h1>dashcam</h1><p>bad session or hop id</p>"), 400),
                 },
                 None => match rest.parse::<i64>() {
                     Ok(id) => (render_session(&store, id), 200),
-                    Err(_) => (page("mayday", "<h1>mayday</h1><p>bad session id</p>"), 400),
+                    Err(_) => (page("dashcam", "<h1>dashcam</h1><p>bad session id</p>"), 400),
                 },
             }
         } else {
-            (page("mayday", "<h1>mayday</h1><p>not found</p>"), 404)
+            (page("dashcam", "<h1>dashcam</h1><p>not found</p>"), 404)
         };
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
             .unwrap();

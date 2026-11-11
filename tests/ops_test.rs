@@ -1,8 +1,8 @@
-use mayday::compare::diff_tool_sequences;
-use mayday::event::EventKind;
-use mayday::redact::Redactor;
-use mayday::store::Store;
-use mayday::watch;
+use dashcam::compare::diff_tool_sequences;
+use dashcam::event::EventKind;
+use dashcam::redact::Redactor;
+use dashcam::store::Store;
+use dashcam::watch;
 
 const KEY_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const KEY_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

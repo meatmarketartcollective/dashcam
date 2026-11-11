@@ -2,10 +2,10 @@ use crate::store::Store;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// The mayday scan surface over the Model Context Protocol: newline-delimited
+/// The dashcam scan surface over the Model Context Protocol: newline-delimited
 /// JSON-RPC 2.0 on stdio, read-only. Every tool maps to a store read, so a
 /// developer's coding agent can inspect the local flight recorder's timeline
-/// without mayday exposing anything over the network.
+/// without dashcam exposing anything over the network.
 pub struct Mcp {
     store: Arc<Store>,
 }
@@ -36,7 +36,7 @@ impl Mcp {
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {}, "resources": {} },
                     "serverInfo": {
-                        "name": "mayday",
+                        "name": "dashcam",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                 }),
@@ -203,7 +203,7 @@ impl Mcp {
                 .map(|(id, started, note, hops)| {
                     let name = note.unwrap_or_else(|| format!("session {id}"));
                     json!({
-                        "uri": format!("mayday://session/{id}"),
+                        "uri": format!("dashcam://session/{id}"),
                         "name": name,
                         "description": format!("agent session started {started}, {hops} hops"),
                         "mimeType": "text/plain",
@@ -214,11 +214,11 @@ impl Mcp {
         }
     }
 
-    /// Read a resource URI: mayday://session/{id} is the session summary,
-    /// mayday://session/{id}/hops/{seq} is one hop's full record.
+    /// Read a resource URI: dashcam://session/{id} is the session summary,
+    /// dashcam://session/{id}/hops/{seq} is one hop's full record.
     fn read_resource(&self, uri: &str) -> Result<Value, String> {
         let rest = uri
-            .strip_prefix("mayday://session/")
+            .strip_prefix("dashcam://session/")
             .ok_or_else(|| format!("unknown resource: {uri}"))?;
         let (id_part, sub) = match rest.split_once('/') {
             Some((id, sub)) => (id, Some(sub)),

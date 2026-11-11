@@ -1,5 +1,5 @@
-use mayday::event::EventKind;
-use mayday::store::{event_jsonl, RetentionPolicy, Store};
+use dashcam::event::EventKind;
+use dashcam::store::{event_jsonl, RetentionPolicy, Store};
 
 fn plaintext_store(dir: &std::path::Path) -> Store {
     Store::open(&dir.join("t.db"), None).unwrap()
@@ -125,7 +125,7 @@ fn export_session_roundtrips_decrypted_and_embeds_payload() {
 
 #[test]
 fn event_jsonl_keeps_unparseable_payloads_as_strings() {
-    let e = mayday::event::Event {
+    let e = dashcam::event::Event {
         id: 1,
         session_id: 1,
         seq: 1,

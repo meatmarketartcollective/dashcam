@@ -125,7 +125,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 x_goog_api_key = h.value.as_str().to_string();
             } else if name.eq_ignore_ascii_case("anthropic-version") {
                 anthropic_version = h.value.as_str().to_string();
-            } else if name.eq_ignore_ascii_case("x-mayday-agent") {
+            } else if name.eq_ignore_ascii_case("x-dashcam-agent") {
                 // multi-agent trace propagation: which agent produced this hop
                 agent = h.value.as_str().trim().to_string();
             }
@@ -209,7 +209,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 }
             }
             Err(e) => {
-                let msg = format!("{{\"mayday_upstream_error\":\"{e}\"}}");
+                let msg = format!("{{\"dashcam_upstream_error\":\"{e}\"}}");
                 let payload = serde_json::json!({
                     "method": method,
                     "path": path,

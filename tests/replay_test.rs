@@ -1,5 +1,5 @@
-use mayday::replay::Replay;
-use mayday::store::Store;
+use dashcam::replay::Replay;
+use dashcam::store::Store;
 
 const K: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
@@ -9,7 +9,7 @@ fn session_with_hops(n: usize) -> (tempfile::TempDir, Store, i64) {
     let s = store.new_session(Some("replay test")).unwrap();
     for i in 0..n {
         store
-            .append(s, mayday::event::EventKind::ModelTurn, &format!("hop {i}"), &format!("{{\"n\":{i}}}"))
+            .append(s, dashcam::event::EventKind::ModelTurn, &format!("hop {i}"), &format!("{{\"n\":{i}}}"))
             .unwrap();
     }
     (dir, store, s)

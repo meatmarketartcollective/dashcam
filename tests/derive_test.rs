@@ -1,4 +1,4 @@
-use mayday::derive::tool_calls_from_response;
+use dashcam::derive::tool_calls_from_response;
 
 /// A plain (non-streamed) OpenAI-style response with two tool calls.
 #[test]

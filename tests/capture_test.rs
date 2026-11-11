@@ -1,5 +1,5 @@
-use mayday::capture::{self, ProxyConfig};
-use mayday::store::Store;
+use dashcam::capture::{self, ProxyConfig};
+use dashcam::store::Store;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,7 @@ fn wait_port(port: u16) {
 /// The proxy writes its hop after the response is on the wire, so a test that
 /// reads the timeline the instant the client saw EOF can beat it. Poll until
 /// the expected number of hops lands (or fail loudly).
-fn wait_events(store: &Store, session: i64, want: usize) -> Vec<mayday::event::Event> {
+fn wait_events(store: &Store, session: i64, want: usize) -> Vec<dashcam::event::Event> {
     for _ in 0..500 {
         let events = store.events(session).unwrap();
         if events.len() >= want {
@@ -137,8 +137,8 @@ fn streaming_responses_are_captured_intact() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
-        redactor: mayday::redact::Redactor::builtin(),
+        retention: Some(dashcam::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
+        redactor: dashcam::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();
@@ -166,11 +166,11 @@ fn streaming_responses_are_captured_intact() {
 #[test]
 fn scrub_survives_multibyte_text() {
     // a secret next to multi-byte UTF-8 must be redacted, not panic the proxy
-    let out = mayday::capture::scrub("reasoning says \u{2014} use sk-abcdef0123456789 here");
+    let out = dashcam::capture::scrub("reasoning says \u{2014} use sk-abcdef0123456789 here");
     assert!(!out.contains("sk-abcdef0123456789"));
     assert!(out.contains("[redacted]"));
     assert!(out.contains('\u{2014}'));
-    assert!(mayday::capture::scrub("h\u{e9}llo w\u{f6}rld \u{1F43A}").contains('\u{1F43A}'));
+    assert!(dashcam::capture::scrub("h\u{e9}llo w\u{f6}rld \u{1F43A}").contains('\u{1F43A}'));
 }
 
 #[test]
@@ -191,8 +191,8 @@ fn proxied_turns_land_in_the_timeline() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
-        redactor: mayday::redact::Redactor::builtin(),
+        retention: Some(dashcam::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
+        redactor: dashcam::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();
@@ -225,7 +225,7 @@ fn proxied_turns_land_in_the_timeline() {
     running.store(false, Ordering::Relaxed);
     assert_eq!(events.len(), 2);
     let first = &events[0];
-    assert_eq!(first.kind, mayday::event::EventKind::ModelTurn);
+    assert_eq!(first.kind, dashcam::event::EventKind::ModelTurn);
     assert!(first.summary.contains("POST /v1/chat/completions"));
     assert!(first.payload.contains("why did you do that"));
     assert!(!first.payload.contains("supersecrettoken123456"));
@@ -284,7 +284,7 @@ fn sse_turns_stream_through_and_record_assembled() {
                 upstream: format!("http://127.0.0.1:{up}"),
                 session: s,
                 retention: None,
-                redactor: mayday::redact::Redactor::builtin(),
+                redactor: dashcam::redact::Redactor::builtin(),
             },
             running,
         );
@@ -356,8 +356,8 @@ fn tool_calls_are_derived_from_recorded_turns() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
-        redactor: mayday::redact::Redactor::builtin(),
+        retention: Some(dashcam::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
+        redactor: dashcam::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();
@@ -375,9 +375,9 @@ fn tool_calls_are_derived_from_recorded_turns() {
 
     let events = store.events(session).unwrap();
     assert_eq!(events.len(), 3, "one turn + two derived tool calls");
-    assert_eq!(events[0].kind, mayday::event::EventKind::ModelTurn);
+    assert_eq!(events[0].kind, dashcam::event::EventKind::ModelTurn);
     for e in &events[1..] {
-        assert_eq!(e.kind, mayday::event::EventKind::ToolCall);
+        assert_eq!(e.kind, dashcam::event::EventKind::ToolCall);
         assert!(e.summary.starts_with("tool_call "));
         let payload: serde_json::Value = serde_json::from_str(&e.payload).unwrap();
         assert_eq!(payload["from_hop"], 1, "derived calls link back to the turn");
@@ -422,8 +422,8 @@ fn agent_header_is_recorded_on_hops() {
         port: proxy_port,
         upstream: format!("http://127.0.0.1:{upstream_port}"),
         session,
-        retention: Some(mayday::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
-        redactor: mayday::redact::Redactor::builtin(),
+        retention: Some(dashcam::store::RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }),
+        redactor: dashcam::redact::Redactor::builtin(),
     };
     let s2 = store.clone();
     let r2 = running.clone();

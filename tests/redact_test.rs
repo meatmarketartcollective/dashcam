@@ -1,4 +1,4 @@
-use mayday::redact::Redactor;
+use dashcam::redact::Redactor;
 use std::io::Write;
 
 /// Built-ins: the prefixes the hand-rolled scanner used, same behavior.

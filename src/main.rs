@@ -1,7 +1,7 @@
-use mayday::capture;
-use mayday::key;
-use mayday::store::{RetentionPolicy, Store};
-use mayday::web;
+use dashcam::capture;
+use dashcam::key;
+use dashcam::store::{RetentionPolicy, Store};
+use dashcam::web;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::io::Write;
@@ -11,9 +11,9 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "mayday", version, about = "Local flight recorder for agent sessions")]
+#[command(name = "dashcam", version, about = "Local flight recorder for agent sessions")]
 struct Cli {
-    /// Path to the mayday timeline database (default: ~/.mayday/timeline.db)
+    /// Path to the dashcam timeline database (default: ~/.dashcam/timeline.db)
     #[arg(short, long, global = true)]
     db: Option<PathBuf>,
 
@@ -67,7 +67,7 @@ enum Command {
     },
     /// Export one session's hops as JSON lines (readable plaintext)
     Export {
-        /// Session id (see `mayday timeline`)
+        /// Session id (see `dashcam timeline`)
         #[arg(short, long)]
         session: i64,
         /// Write to this file instead of stdout
@@ -84,7 +84,7 @@ enum Command {
     Diff {
         /// File to record; a missing file with a prior snapshot records the deletion
         path: PathBuf,
-        /// Session id (see `mayday timeline`)
+        /// Session id (see `dashcam timeline`)
         #[arg(short, long)]
         session: i64,
     },
@@ -94,7 +94,7 @@ enum Command {
     Mcp,
     /// Print every event of one session, oldest first
     Replay {
-        /// Session id (see `mayday timeline`)
+        /// Session id (see `dashcam timeline`)
         #[arg(short, long)]
         session: i64,
         /// Step through one hop at a time instead of dumping the session
@@ -103,7 +103,7 @@ enum Command {
     },
     /// Follow a live session, printing each hop as it lands (ctrl-c to stop)
     Watch {
-        /// Session id (see `mayday timeline`)
+        /// Session id (see `dashcam timeline`)
         #[arg(short, long)]
         session: i64,
         /// Seconds between polls
@@ -120,7 +120,7 @@ enum Command {
     },
     /// Compare two sessions' tool-call sequences to spot a changed path
     DiffSessions {
-        /// First session id (see `mayday timeline`)
+        /// First session id (see `dashcam timeline`)
         #[arg(short = 'a')]
         a: i64,
         /// Second session id
@@ -132,7 +132,7 @@ enum Command {
 fn default_db() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         let mut p = PathBuf::from(home);
-        p.push(".mayday");
+        p.push(".dashcam");
         p.push("timeline.db");
         return p;
     }
@@ -156,7 +156,7 @@ fn main() {
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
             println!(
-                "point the harness's API base URL at http://127.0.0.1:{port} (plain HTTP to localhost; mayday makes the secure connection outward)"
+                "point the harness's API base URL at http://127.0.0.1:{port} (plain HTTP to localhost; dashcam makes the secure connection outward)"
             );
             let running = Arc::new(AtomicBool::new(true));
             let retention = RetentionPolicy {
@@ -166,8 +166,8 @@ fn main() {
                 export_path: export,
             };
             let redactor = match &rules {
-                Some(path) => mayday::redact::Redactor::load(path),
-                None => mayday::redact::Redactor::builtin(),
+                Some(path) => dashcam::redact::Redactor::load(path),
+                None => dashcam::redact::Redactor::builtin(),
             };
             if let Err(e) = capture::serve(
                 store,
@@ -200,7 +200,7 @@ fn main() {
         }
         Command::Diff { path, session } => {
             let store = open_store(&db_path);
-            match mayday::filediff::record(&store, session, &path) {
+            match dashcam::filediff::record(&store, session, &path) {
                 Ok(out) => {
                     if out.changed {
                         println!("{}", out.summary);
@@ -227,17 +227,17 @@ fn main() {
             }
             let existing = store.events(session).expect("read session");
             for e in &existing {
-                println!("{}", mayday::watch::render_line(e));
+                println!("{}", dashcam::watch::render_line(e));
             }
             let mut last_seq = existing.last().map(|e| e.seq).unwrap_or(0);
             println!("watching session {session} (ctrl-c to stop)");
             let gap = std::time::Duration::from_secs_f64(interval.max(0.1));
             loop {
                 std::thread::sleep(gap);
-                match mayday::watch::poll_once(&store, session, last_seq) {
+                match dashcam::watch::poll_once(&store, session, last_seq) {
                     Ok(events) => {
                         for e in events {
-                            println!("{}", mayday::watch::render_line(&e));
+                            println!("{}", dashcam::watch::render_line(&e));
                             last_seq = e.seq;
                         }
                     }
@@ -283,8 +283,8 @@ fn main() {
         Command::Audit { rules } => {
             let store = open_store(&db_path);
             let redactor = match rules {
-                Some(path) => mayday::redact::Redactor::load(&path),
-                None => mayday::redact::Redactor::builtin(),
+                Some(path) => dashcam::redact::Redactor::load(&path),
+                None => dashcam::redact::Redactor::builtin(),
             };
             match store.audit(&redactor) {
                 Ok(report) => {
@@ -295,7 +295,7 @@ fn main() {
                         );
                         if report.undecryptable > 0 {
                             println!(
-                                "{} fields could not be decrypted and were skipped (run mayday verify)",
+                                "{} fields could not be decrypted and were skipped (run dashcam verify)",
                                 report.undecryptable
                             );
                         }
@@ -326,7 +326,7 @@ fn main() {
                 (Ok(ac), Ok(bc)) => {
                     let names_a: Vec<String> = ac.into_iter().map(|(_, n)| n).collect();
                     let names_b: Vec<String> = bc.into_iter().map(|(_, n)| n).collect();
-                    let diff = mayday::compare::diff_tool_sequences(&names_a, &names_b);
+                    let diff = dashcam::compare::diff_tool_sequences(&names_a, &names_b);
                     println!(
                         "session {a}: {} tool calls, session {b}: {} tool calls, {} aligned",
                         diff.a_calls, diff.b_calls, diff.common
@@ -380,7 +380,7 @@ fn main() {
         }
         Command::Mcp => {
             let store = Arc::new(open_store(&db_path));
-            if let Err(e) = mayday::mcp::run(store) {
+            if let Err(e) = dashcam::mcp::run(store) {
                 eprintln!("mcp stopped: {e}");
                 std::process::exit(1);
             }
@@ -401,7 +401,7 @@ fn main() {
                 println!("session {session} has no hops");
                 return;
             }
-            let mut r = mayday::replay::Replay::new(events);
+            let mut r = dashcam::replay::Replay::new(events);
             println!("{}", r.render_current());
             let stdin = std::io::stdin();
             loop {

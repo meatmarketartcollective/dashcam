@@ -1,5 +1,5 @@
-use mayday::event::EventKind;
-use mayday::store::{RetentionPolicy, Store};
+use dashcam::event::EventKind;
+use dashcam::store::{RetentionPolicy, Store};
 
 const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const K2: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";

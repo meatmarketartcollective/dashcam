@@ -1,5 +1,5 @@
-use mayday::event::EventKind;
-use mayday::store::Store;
+use dashcam::event::EventKind;
+use dashcam::store::Store;
 use std::sync::Arc;
 use std::thread;
 
@@ -69,7 +69,7 @@ fn concurrent_sessions_get_unique_ids() {
 }
 
 /// The store opens the database in WAL mode with a busy timeout, so a second
-/// mayday process recording against the same file waits out the writer
+/// dashcam process recording against the same file waits out the writer
 /// instead of failing.
 #[test]
 fn opens_in_wal_mode_with_busy_timeout() {

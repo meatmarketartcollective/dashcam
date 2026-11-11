@@ -55,7 +55,7 @@ impl Store {
             },
         };
         conn.execute_batch(SCHEMA)?;
-        // Two mayday processes can share one timeline (two proxies, a CLI
+        // Two dashcam processes can share one timeline (two proxies, a CLI
         // prune while a proxy records): WAL keeps readers from blocking the
         // writer, and a busy timeout makes competing writers wait out each
         // other's commits instead of failing with SQLITE_BUSY.
@@ -124,7 +124,7 @@ impl Store {
         // The seq is assigned inside the INSERT statement itself: SQLite
         // evaluates the subquery while holding the write lock, so the next-seq
         // read and the write are one atomic step. That holds across threads
-        // (the mutex serializes this connection) AND across separate mayday
+        // (the mutex serializes this connection) AND across separate dashcam
         // processes sharing the database file, which a read-then-insert pair
         // would not.
         let conn = self.conn();
@@ -205,7 +205,7 @@ impl Store {
     }
 
     /// Hops with a seq greater than `min_seq`, oldest first: the live-tail
-    /// read behind `mayday watch`.
+    /// read behind `dashcam watch`.
     pub fn events_since(&self, session: i64, min_seq: i64) -> rusqlite::Result<Vec<Event>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -381,7 +381,7 @@ pub struct VerifyMiss {
     pub field: &'static str,
 }
 
-/// What `mayday verify` found walking the timeline.
+/// What `dashcam verify` found walking the timeline.
 #[derive(Debug, Clone, Default)]
 pub struct VerifyReport {
     /// False for a plaintext store (no key): there is nothing to check.
@@ -402,7 +402,7 @@ pub struct LeakHit {
     pub preview: String,
 }
 
-/// What `mayday audit` found scanning the timeline for redaction leaks.
+/// What `dashcam audit` found scanning the timeline for redaction leaks.
 #[derive(Debug, Clone, Default)]
 pub struct AuditReport {
     pub scanned: usize,
