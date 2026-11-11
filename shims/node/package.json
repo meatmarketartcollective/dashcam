@@ -1,0 +1,7 @@
+{
+  "name": "dashcam-shim",
+  "version": "0.1.0",
+  "description": "Record model API traffic from any Node process into a local dashcam daemon",
+  "main": "dashcam-shim.js",
+  "license": "MIT"
+}

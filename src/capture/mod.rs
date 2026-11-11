@@ -85,6 +85,51 @@ fn record_turn(
     }
 }
 
+/// Record one exchange a shim already sent straight to the provider.
+///
+/// The shim POSTs the exchange as JSON (provider, method, path, status,
+/// request_body, response_body, streamed, agent) and the daemon writes it
+/// through the same path as proxied traffic: redaction at write time, one
+/// model_turn hop, derived tool-call hops from the provider dialect. Shims
+/// and the proxy therefore produce identical records.
+fn handle_ingest(
+    store: &std::sync::Arc<crate::store::Store>,
+    cfg: &ProxyConfig,
+    body: &str,
+) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("bad json: {e}"))?;
+    let provider = match v["provider"].as_str() {
+        Some("anthropic") => "anthropic",
+        Some("gemini") => "gemini",
+        _ => "openai",
+    };
+    let method = v["method"].as_str().unwrap_or("POST").to_string();
+    let path = v["path"]
+        .as_str()
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .to_string();
+    let status = v["status"].as_u64().unwrap_or(0) as u16;
+    let request_body = v["request_body"].as_str().unwrap_or("").to_string();
+    let response_body = v["response_body"].as_str().unwrap_or("").to_string();
+    let streamed = v["streamed"].as_bool().unwrap_or(false);
+    let agent = v["agent"].as_str().unwrap_or("").to_string();
+    record_turn(
+        store,
+        cfg,
+        &method,
+        &path,
+        status,
+        &request_body,
+        &response_body,
+        streamed,
+        provider,
+        &agent,
+    );
+    Ok(format!("{{\"ok\":true,\"session\":{}}}", cfg.session))
+}
+
 /// Forward every request to the upstream provider and record both directions
 /// as one model_turn event per exchange.
 ///
@@ -130,6 +175,33 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 agent = h.value.as_str().trim().to_string();
             }
         }
+        // Machine door for language shims: a shim forwards an exchange it
+        // already sent directly to the provider. Recorded through the same
+        // path as proxied traffic, then answered locally, never forwarded.
+        if method == "POST" && path == "ingest" {
+            match handle_ingest(&store, &cfg, &String::from_utf8_lossy(&body)) {
+                Ok(reply) => {
+                    let ct = tiny_http::Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json"[..],
+                    )
+                    .expect("static header");
+                    let _ = rq.respond(
+                        tiny_http::Response::from_string(reply).with_header(ct),
+                    );
+                }
+                Err(e) => {
+                    let _ = rq.respond(
+                        tiny_http::Response::from_string(format!(
+                            "{{\"error\":\"{e}\"}}"
+                        ))
+                        .with_status_code(400),
+                    );
+                }
+            }
+            continue;
+        }
+
         let provider = detect_provider(&path);
 
         match send_upstream(
@@ -345,4 +417,54 @@ pub fn scrub(s: &str) -> String {
         i = j;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod ingest_tests {
+    use super::*;
+    use crate::redact::Redactor;
+
+    #[test]
+    fn ingest_records_a_model_turn_and_derives_tool_calls() {
+        let dir = std::env::temp_dir().join(format!("dashcam-ingest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let db = dir.join("ingest-test.db");
+        let store = std::sync::Arc::new(
+            crate::store::Store::open(&db, None).expect("store"),
+        );
+        let session = store.new_session(Some("ingest-test")).expect("session");
+        let cfg = ProxyConfig {
+            port: 0,
+            upstream: "http://127.0.0.1:1".into(),
+            session,
+            retention: None,
+            redactor: Redactor::builtin(),
+        };
+        let body = serde_json::json!({
+            "provider": "openai",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "status": 200,
+            "request_body": "{\"model\":\"gpt-test\"}",
+            "response_body": "{\"choices\":[]}",
+            "streamed": false
+        })
+        .to_string();
+        let reply = handle_ingest(&store, &cfg, &body).expect("ingest ok");
+        assert!(reply.contains("\"ok\":true"));
+        let events = store.events(session).expect("events");
+        assert_eq!(
+            1,
+            events
+                .iter()
+                .filter(|e| e.kind == crate::event::EventKind::ModelTurn)
+                .count()
+        );
+        // a token-shaped secret in a shim-posted body is scrubbed at write
+        let body2 = body.replace("gpt-test", "sk-abcdefghijklmnop1234");
+        handle_ingest(&store, &cfg, &body2).expect("ingest ok");
+        let events = store.events(session).expect("events");
+        assert!(!events.iter().any(|e| e.payload.contains("sk-abcdefghijklmnop1234")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

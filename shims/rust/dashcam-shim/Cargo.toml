@@ -1,0 +1,12 @@
+[package]
+name = "dashcam-shim"
+version = "0.1.0"
+edition = "2021"
+description = "Record model API traffic from any reqwest-based Rust process into a local dashcam daemon"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest-middleware = "0.4"
+async-trait = "0.1"
+http = "1"
+serde_json = "1"
