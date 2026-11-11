@@ -30,11 +30,13 @@ fn record_turn(
     request_body: &str,
     response_body: &str,
     streamed: bool,
+    provider: &str,
     agent: &str,
 ) {
     let mut payload = serde_json::json!({
         "method": method,
         "path": path,
+        "provider": provider,
         "request_body": cfg.redactor.scrub(request_body),
         "status": status,
         "response_body": cfg.redactor.scrub(response_body),
@@ -54,7 +56,12 @@ fn record_turn(
     let turn_seq = store
         .append_get_seq(cfg.session, EventKind::ModelTurn, &summary, &payload)
         .unwrap_or(0);
-    for tc in crate::derive::tool_calls_from_response(response_body, streamed) {
+    let derived = match provider {
+        "anthropic" => crate::derive::tool_calls_from_anthropic(response_body, streamed),
+        "gemini" => crate::derive::tool_calls_from_gemini(response_body, streamed),
+        _ => crate::derive::tool_calls_from_response(response_body, streamed),
+    };
+    for tc in derived {
         let mut tc_payload = serde_json::json!({
             "tool": tc.name,
             "call_id": tc.id,
@@ -100,6 +107,9 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
         let path = rq.url().trim_start_matches('/').to_string();
         let mut content_type = String::new();
         let mut auth_header = String::new();
+        let mut x_api_key = String::new();
+        let mut x_goog_api_key = String::new();
+        let mut anthropic_version = String::new();
         let mut agent = String::new();
         for h in rq.headers() {
             let name = h.field.as_str().as_str();
@@ -107,14 +117,24 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 content_type = h.value.as_str().to_string();
             } else if name.eq_ignore_ascii_case("authorization") {
                 auth_header = h.value.as_str().to_string();
+            } else if name.eq_ignore_ascii_case("x-api-key") {
+                // Anthropic native auth
+                x_api_key = h.value.as_str().to_string();
+            } else if name.eq_ignore_ascii_case("x-goog-api-key") {
+                // Google Gemini native auth
+                x_goog_api_key = h.value.as_str().to_string();
+            } else if name.eq_ignore_ascii_case("anthropic-version") {
+                anthropic_version = h.value.as_str().to_string();
             } else if name.eq_ignore_ascii_case("x-mayday-agent") {
                 // multi-agent trace propagation: which agent produced this hop
                 agent = h.value.as_str().trim().to_string();
             }
         }
+        let provider = detect_provider(&path);
 
         match send_upstream(
             &cfg.upstream, &method, &path, &content_type, &auth_header, &body,
+            &x_api_key, &x_goog_api_key, &anthropic_version,
         ) {
             Ok(resp) => {
                 let status = resp.status();
@@ -158,6 +178,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         &String::from_utf8_lossy(&body),
                         &String::from_utf8_lossy(&captured),
                         true,
+                        &provider,
                         &agent,
                     );
                 } else {
@@ -172,6 +193,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         &String::from_utf8_lossy(&body),
                         &String::from_utf8_lossy(&resp_body),
                         false,
+                        &provider,
                         &agent,
                     );
                     let response = tiny_http::Response::from_data(resp_body)
@@ -191,6 +213,7 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                 let payload = serde_json::json!({
                     "method": method,
                     "path": path,
+                    "provider": detect_provider(&path),
                     "request_body": cfg.redactor.scrub(&String::from_utf8_lossy(&body)),
                     "status": 502,
                     "response_body": &msg,
@@ -217,6 +240,9 @@ fn send_upstream(
     content_type: &str,
     auth: &str,
     body: &[u8],
+    x_api_key: &str,
+    x_goog_api_key: &str,
+    anthropic_version: &str,
 ) -> Result<ureq::Response, String> {
     let url = format!("{}/{}", upstream.trim_end_matches('/'), path);
     let req = ureq::request(method, &url);
@@ -232,7 +258,39 @@ fn send_upstream(
     } else {
         req.set("Authorization", auth)
     };
+    let req = if x_api_key.is_empty() {
+        req
+    } else {
+        req.set("x-api-key", x_api_key)
+    };
+    let req = if x_goog_api_key.is_empty() {
+        req
+    } else {
+        req.set("x-goog-api-key", x_goog_api_key)
+    };
+    let req = if anthropic_version.is_empty() {
+        req
+    } else {
+        req.set("anthropic-version", anthropic_version)
+    };
     req.send_bytes(body).map_err(|e| e.to_string())
+}
+
+/// Which provider dialect a request path speaks. The proxy stays a passive
+/// recorder: bodies are stored raw either way, the tag only tells the
+/// timeline and the tool-call deriver which shape to expect. Paths that
+/// match none of the known dialects read as "openai", the OpenAI-compatible
+/// shape most harnesses and gateways speak.
+pub fn detect_provider(path: &str) -> &'static str {
+    if path.contains("/messages") {
+        "anthropic"
+    } else if path.contains("generateContent") || path.contains("streamGenerateContent") {
+        "gemini"
+    } else if path.contains("/embeddings") || path.contains("mistral") {
+        "openai"
+    } else {
+        "openai"
+    }
 }
 
 /// A Read that forwards upstream bytes to the HTTP client as they arrive
