@@ -15,8 +15,10 @@
 //! Env: DASHCAM_INGEST_URL (default http://127.0.0.1:8123/ingest),
 //! DASHCAM_HOSTS (comma-separated extras), DASHCAM_AGENT.
 
+use http::Extensions;
 use reqwest::header::CONTENT_TYPE;
-use reqwest_middleware::{Error, Middleware, Next, Request, Response};
+use reqwest::{Request, Response};
+use reqwest_middleware::{Error, Middleware, Next, Result};
 
 const DEFAULT_HOSTS: &[&str] = &[
     "api.openai.com",
@@ -111,10 +113,10 @@ impl Default for DashcamMiddleware {
 
 #[async_trait::async_trait]
 impl Middleware for DashcamMiddleware {
-    async fn run(
+    async fn handle(
         &self,
         req: Request,
-        extensions: &mut http::Extensions,
+        extensions: &mut Extensions,
         next: Next<'_>,
     ) -> Result<Response> {
         let url = req.url().clone();
@@ -147,6 +149,11 @@ impl Middleware for DashcamMiddleware {
                     .unwrap_or("")
                     .to_string();
                 let streamed = ct.contains("text/event-stream");
+                let hdrs: Vec<(http::header::HeaderName, http::header::HeaderValue)> =
+                    resp.headers()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
                 let bytes = resp.bytes().await?;
                 let text = String::from_utf8_lossy(&bytes).into_owned();
                 self.post(serde_json::json!({
@@ -160,13 +167,13 @@ impl Middleware for DashcamMiddleware {
                     "agent": agent,
                 }));
                 let mut builder = http::Response::builder().status(status);
-                for (name, value) in resp.headers() {
+                for (name, value) in hdrs {
                     builder = builder.header(name, value);
                 }
                 let rebuilt = builder
                     .body(reqwest::Body::from(bytes))
                     .map_err(Error::middleware)?;
-                Ok(Response::new(rebuilt))
+                Ok(reqwest::Response::from(rebuilt))
             }
             Err(e) => {
                 self.post(serde_json::json!({

@@ -1,0 +1,8 @@
+/data/data/com.termux/files/home/dashcam-work/shims/rust/dashcam-shim/target/debug/deps/litemap-08e9a7ec02869f8a.d: /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/lib.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/map.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/mod.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/slice_impl.rs
+
+/data/data/com.termux/files/home/dashcam-work/shims/rust/dashcam-shim/target/debug/deps/liblitemap-08e9a7ec02869f8a.rmeta: /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/lib.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/map.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/mod.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/slice_impl.rs
+
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/lib.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/map.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/mod.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/litemap-0.8.3/src/store/slice_impl.rs:

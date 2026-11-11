@@ -1,0 +1,8 @@
+/data/data/com.termux/files/home/dashcam-work/shims/rust/dashcam-shim/target/debug/deps/icu_normalizer-bde1b9fb52c0ca78.d: /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/data/data/com.termux/files/home/dashcam-work/shims/rust/dashcam-shim/target/debug/deps/libicu_normalizer-bde1b9fb52c0ca78.rmeta: /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs /data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs
+
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/lib.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/properties.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/provider.rs:
+/data/data/com.termux/files/home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.4.0/src/uts46.rs:
