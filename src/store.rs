@@ -639,6 +639,7 @@ pub fn event_jsonl(e: &Event) -> String {
 
 fn kind_to_str(k: EventKind) -> &'static str {
     match k {
+            EventKind::NetworkHop => "network_hop",
         EventKind::ModelTurn => "model_turn",
         EventKind::ToolCall => "tool_call",
         EventKind::Prompt => "prompt",

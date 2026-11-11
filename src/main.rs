@@ -49,6 +49,36 @@ enum Command {
         /// Extra redaction rules, one regex per line; built-ins always on
         #[arg(short, long)]
         rules: Option<PathBuf>,
+        /// Also serve realtime agents: WebSocket passthrough port
+        #[arg(long)]
+        ws_port: Option<u16>,
+        /// WebSocket upstream, e.g. wss://api.openai.com (pairs with --ws-port)
+        #[arg(long)]
+        ws_upstream: Option<String>,
+    },
+    /// Record network metadata: which providers get called, and when
+    Tap {
+        /// Capture live packets (needs root or CAP_NET_RAW)
+        #[arg(long)]
+        live: bool,
+        /// Parse an offline pcap file instead
+        #[arg(long)]
+        pcap: Option<PathBuf>,
+        /// Human label for the session
+        #[arg(short, long)]
+        note: Option<String>,
+        /// Keep at most this many events in the timeline (oldest pruned)
+        #[arg(long)]
+        max_events: Option<i64>,
+        /// Drop events from sessions older than this many days
+        #[arg(long)]
+        max_age_days: Option<i64>,
+        /// Keep the timeline under this many stored bytes (oldest pruned)
+        #[arg(long)]
+        max_size: Option<i64>,
+        /// Before retention ages hops out, append them to this JSONL file
+        #[arg(long)]
+        export: Option<PathBuf>,
     },
     /// Apply retention now: keep the newest history, prune the rest
     Prune {
@@ -151,7 +181,7 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { port, upstream, note, max_events, max_age_days, max_size, export, rules } => {
+        Command::Record { port, upstream, note, max_events, max_age_days, max_size, export, rules, ws_port, ws_upstream } => {
             let store = Arc::new(open_store(&db_path));
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
@@ -163,18 +193,71 @@ fn main() {
                 max_events,
                 max_age_days,
                 max_size_bytes: max_size,
-                export_path: export,
+                export_path: export.clone(),
             };
             let redactor = match &rules {
                 Some(path) => dashcam::redact::Redactor::load(path),
                 None => dashcam::redact::Redactor::builtin(),
             };
+            if let Some(ws_port) = ws_port {
+                let ws_upstream = ws_upstream.unwrap_or_else(|| upstream.clone());
+                println!("websocket passthrough on ws://127.0.0.1:{ws_port} -> {ws_upstream}");
+                let ws_store = Arc::clone(&store);
+                let ws_running = Arc::clone(&running);
+                std::thread::spawn(move || {
+                    let retention = RetentionPolicy {
+                        max_events,
+                        max_age_days,
+                        max_size_bytes: max_size,
+                        export_path: export,
+                    };
+                    let redactor = match &rules {
+                        Some(path) => dashcam::redact::Redactor::load(path),
+                        None => dashcam::redact::Redactor::builtin(),
+                    };
+                    if let Err(e) = dashcam::ws::serve(
+                        ws_store,
+                        dashcam::ws::WsConfig {
+                            port: ws_port,
+                            upstream: ws_upstream,
+                            session: id,
+                            retention: Some(retention),
+                            redactor,
+                        },
+                        ws_running,
+                    ) {
+                        eprintln!("ws passthrough stopped: {e}");
+                        std::process::exit(1);
+                    }
+                });
+            }
             if let Err(e) = capture::serve(
                 store,
                 capture::ProxyConfig { port, upstream, session: id, retention: Some(retention), redactor },
                 running,
             ) {
                 eprintln!("capture stopped: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Tap { live, pcap, note, max_events, max_age_days, max_size, export } => {
+            let store = Arc::new(open_store(&db_path));
+            let id = store.new_session(note.as_deref()).expect("create session");
+            let retention = RetentionPolicy {
+                max_events,
+                max_age_days,
+                max_size_bytes: max_size,
+                export_path: export,
+            };
+            let cfg = dashcam::tap::TapConfig {
+                live,
+                pcap,
+                session: id,
+                retention: Some(retention),
+                redactor: dashcam::redact::Redactor::builtin(),
+            };
+            if let Err(e) = dashcam::tap::run(store, cfg) {
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         }

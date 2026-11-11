@@ -16,6 +16,8 @@ pub struct Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    /// Network metadata hop from the optional tap: who called where, when
+    NetworkHop,
     /// A model API turn: request as sent, response as received
     ModelTurn,
     /// A tool call and its result

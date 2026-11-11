@@ -11,3 +11,5 @@ pub mod mcp;
 pub mod store;
 pub mod watch;
 pub mod web;
+pub mod tap;
+pub mod ws;

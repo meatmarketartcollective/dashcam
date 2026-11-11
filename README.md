@@ -69,3 +69,37 @@ what.
 
 Rust, no runtime dependencies beyond SQLite (bundled). See
 docs/architecture.md for the design.
+
+## WebSocket passthrough (realtime and voice agents)
+
+Some agents never speak request-response HTTP; they hold a WebSocket open
+(OpenAI Realtime, Gemini Live, and similar). Run a second port beside the
+proxy:
+
+    dashcam record --port 8099 --upstream https://api.openai.com \
+        --ws-port 8098 --ws-upstream wss://api.openai.com
+
+Point the harness's WebSocket client at ws://127.0.0.1:8098 and dashcam
+terminates the connection, records every frame in both directions with
+timestamps, and forwards over its own secure connection to the provider.
+Auth headers are forwarded upstream and never recorded. One model_turn hop
+is written per connection: transport "websocket", the ordered `frames`
+transcript, plus the first text frame each way as request_body and
+response_body. Frames over 32 MiB are refused, a session stops recording
+past 8 MiB, fragmented messages keep their framing, and an idle session is
+cut at 10 minutes. The wss:// path uses the standard webpki roots; it is
+compile-checked and unit-tested but has not been driven against a live
+provider yet.
+
+## Network metadata tap (optional, off by default)
+
+    dashcam tap --pcap capture.pcap --note why
+    dashcam tap --live   # needs root or CAP_NET_RAW
+
+Records which providers got called, and when: the TLS SNI hostname (read
+without any decryption; no payloads, no man-in-the-middle, no root
+certificates), bytes in and out per connection, and a flow-end hop with the
+totals. Written as network_hop hops. A ClientHello must arrive inside the
+first 16 KiB of a connection (virtually always true); on a locked-down
+machine, capture offline with `tcpdump -i any -w file.pcap` and replay it
+here.
