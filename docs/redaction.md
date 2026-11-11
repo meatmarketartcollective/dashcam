@@ -1,6 +1,6 @@
 # Redaction
 
-Everything mayday records is scrubbed at write time, before it reaches the
+Everything dashcam records is scrubbed at write time, before it reaches the
 timeline. There is no opt-out in v1: the built-in rules always run, and a
 rules file can only add more.
 
@@ -21,7 +21,7 @@ Authorization headers are never recorded at all.
 
 ## Rules file
 
-`mayday record --rules ~/.mayday/redaction.rules` loads extra rules on top of
+`dashcam record --rules ~/.dashcam/redaction.rules` loads extra rules on top of
 the built-ins. Format:
 
 - one regular expression per line;
@@ -31,7 +31,7 @@ the built-ins. Format:
 - a line that does not compile as a regex is skipped, never fatal;
 - a missing or unreadable file is not an error: the built-ins still apply.
 
-Example `~/.mayday/redaction.rules`:
+Example `~/.dashcam/redaction.rules`:
 
 ```
 # vendor-specific API keys

@@ -9,7 +9,7 @@ agent harness (any) ──► model API
         │  2. tool hook/wrapper emits a record per call
         │  3. working-tree diffs captured between turns
         ▼
-   mayday daemon ──► timeline.db (SQLite)
+   dashcam daemon ──► timeline.db (SQLite)
                           │
                     replay UI: why did it do that
 ```
@@ -20,7 +20,7 @@ and that traffic crosses a socket we can stand in front of.
 
 ## File boundary
 
-`mayday diff <path> --session <id>` records a `file_diff` hop: the harness
+`dashcam diff <path> --session <id>` records a `file_diff` hop: the harness
 calls it after every file change. Edges are handled, not crashed on:
 
 - new file: everything added, `new_file: true`
@@ -42,22 +42,22 @@ and diff lines pass the always-on redactor before write.
 
 Any number of agents can share one proxy session: the timeline is safe for
 concurrent writers (WAL + atomic seq). To tell agents apart, a harness sets
-the `X-Mayday-Agent` header on model API requests; every hop that agent
+the `X-Dashcam-Agent` header on model API requests; every hop that agent
 produces (model turns, derived tool calls, error hops) carries `"agent"` in
 its payload. Agents that do not set the header record without an agent field,
 so nothing changes for a single-agent setup.
 
 ## Interactive replay
 
-`mayday replay <session> --interactive` steps through the timeline one hop at
+`dashcam replay <session> --interactive` steps through the timeline one hop at
 a time: the full payload pretty-printed, then the state at that hop (every
 summary up to and including it) so a failed run reads like a story. Keys:
-enter next, `b` back, `f` first, `l` last, `q` quit. `mayday replay <session>`
+enter next, `b` back, `f` first, `l` last, `q` quit. `dashcam replay <session>`
 keeps the one-shot dump.
 
 ## Scan tools over MCP (milestone 3)
 
-`mayday mcp` speaks the Model Context Protocol on stdio: newline-delimited
+`dashcam mcp` speaks the Model Context Protocol on stdio: newline-delimited
 JSON-RPC 2.0 in, responses out, notifications answer nothing. It is
 read-only and local-only; there is no network listener. A developer points
 their coding agent's MCP config at the binary and the agent can scan the
@@ -91,15 +91,15 @@ the timeline is under the cap.
 Nothing retention removes is lost silently: name `--export <file>` and
 every aged-out hop lands in that file first, one JSON line per hop,
 decrypted, payload embedded as parsed JSON. The file is appended to, so
-repeated prunes accumulate. `mayday export --session N [--out file]` does
+repeated prunes accumulate. `dashcam export --session N [--out file]` does
 the same for a whole session on demand (stdout when no file is named).
 
 ## Resources: browsing instead of tool-calling
 
 The MCP surface also speaks resources. `resources/list` returns one
-resource per session (`mayday://session/{id}`, text/plain); reading it
+resource per session (`dashcam://session/{id}`, text/plain); reading it
 returns the session summary. `resources/read` also accepts
-`mayday://session/{id}/hops/{seq}`, which returns one hop's full record as
+`dashcam://session/{id}/hops/{seq}`, which returns one hop's full record as
 JSON with the payload embedded as parsed JSON. Unknown or malformed URIs
 are rejected with the MCP "resource not found" error (-32002), never a
 crash. Read-only, local-only, same store reads as the scan tools.
