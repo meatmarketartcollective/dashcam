@@ -33,6 +33,25 @@ Record file changes at the file boundary:
 
     dashcam diff src/main.rs --session 1
 
+### Provider presets and the env wrapper
+
+Skip the URL. Name the provider and dashcam fills in the base:
+
+    dashcam record --provider anthropic --port 8099
+
+`--upstream` still wins when both are given, so a mirror or gateway keeps
+working. `dashcam env` prints the shell exports that point the common harness
+env vars at the recorder, and `dashcam wrap` starts the recorder, runs a
+command with those exports set, and tears the recorder down when the command
+exits:
+
+    eval "$(dashcam env --port 8099)"          # or
+    dashcam wrap --provider openai -- python agent.py
+
+Every agent the harness spawns inherits those base URLs, so a swarm lands in
+the same timeline without touching agent code. An agent that never touches the
+recorder still shows up in the network tap, as SNI-level metadata only.
+
 ## How it keeps itself safe
 
 - **Redaction always on.** Token-shaped secrets (sk-, Bearer, nvapi-) are
