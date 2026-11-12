@@ -153,7 +153,14 @@ enum Command {
         session: i64,
     },
     /// List sessions and their event counts
-    Timeline,
+    Timeline {
+        /// Only sessions with hops from this agent (X-Dashcam-Agent or DASHCAM_AGENT_ID)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Only sessions sharing this run id (X-Dashcam-Run or DASHCAM_RUN)
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Serve the scan tools over the MCP stdio protocol (read-only)
     Mcp,
     /// Print every event of one session, oldest first
@@ -519,9 +526,23 @@ fn main() {
                 }
             }
         }
-        Command::Timeline => {
+        Command::Timeline { agent, run } => {
             let store = open_store(&db_path);
-            for (id, started, note, events) in store.sessions().expect("list sessions") {
+            let sessions = if agent.is_none() && run.is_none() {
+                store.sessions().expect("list sessions")
+            } else if run.is_none() {
+                store
+                    .sessions_with_tag("agent", agent.as_deref().expect("agent"))
+                    .expect("filter sessions")
+            } else if agent.is_none() {
+                store
+                    .sessions_with_tag("run", run.as_deref().expect("run"))
+                    .expect("filter sessions")
+            } else {
+                eprintln!("pass --agent or --run, not both");
+                std::process::exit(2);
+            };
+            for (id, started, note, events) in sessions {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
             }
         }

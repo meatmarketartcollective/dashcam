@@ -393,6 +393,26 @@ fn handle_conn(store: &Arc<Store>, cfg: &WsConfig, mut client: TcpStream) -> Res
         .nth(1)
         .unwrap_or("/")
         .to_string();
+    let mut agent = String::new();
+    let mut parent = String::new();
+    let mut run = String::new();
+    for (k, v) in &headers {
+        match k.as_str() {
+            "x-dashcam-agent" => agent = v.trim().to_string(),
+            "x-dashcam-parent" => parent = v.trim().to_string(),
+            "x-dashcam-run" => run = v.trim().to_string(),
+            _ => {}
+        }
+    }
+    if agent.is_empty() {
+        agent = std::env::var("DASHCAM_AGENT_ID").unwrap_or_default();
+    }
+    if parent.is_empty() {
+        parent = std::env::var("DASHCAM_PARENT").unwrap_or_default();
+    }
+    if run.is_empty() {
+        run = std::env::var("DASHCAM_RUN").unwrap_or_default();
+    }
 
     let reply = format!(
         "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
@@ -455,7 +475,7 @@ fn handle_conn(store: &Arc<Store>, cfg: &WsConfig, mut client: TcpStream) -> Res
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
-    write_hop(store, cfg, &path, &frames);
+    write_hop(store, cfg, &path, &frames, &agent, &parent, &run);
     Ok(())
 }
 
@@ -465,6 +485,9 @@ fn write_hop(
     cfg: &WsConfig,
     path: &str,
     frames: &Arc<Mutex<Vec<serde_json::Value>>>,
+    agent: &str,
+    parent: &str,
+    run: &str,
 ) {
     let frames = frames.lock().expect("frames").clone();
     let first = |dir: &str| {
@@ -477,7 +500,7 @@ fn write_hop(
     };
     let c2s = frames.iter().filter(|f| f["dir"] == "c2s").count();
     let s2c = frames.iter().filter(|f| f["dir"] == "s2c").count();
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "transport": "websocket",
         "provider": crate::capture::detect_provider(path),
         "upstream": cfg.upstream,
@@ -486,6 +509,15 @@ fn write_hop(
         "request_body": first("c2s"),
         "response_body": first("s2c"),
     });
+    if !agent.is_empty() {
+        payload["agent"] = serde_json::Value::String(agent.to_string());
+    }
+    if !parent.is_empty() {
+        payload["parent"] = serde_json::Value::String(parent.to_string());
+    }
+    if !run.is_empty() {
+        payload["run"] = serde_json::Value::String(run.to_string());
+    }
     let summary = format!("websocket {c2s} out / {s2c} in frames");
     let _ = store.append(cfg.session, EventKind::ModelTurn, &summary, &payload.to_string());
     if let Some(policy) = &cfg.retention {

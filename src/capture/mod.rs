@@ -32,6 +32,8 @@ fn record_turn(
     streamed: bool,
     provider: &str,
     agent: &str,
+    parent: &str,
+    run: &str,
 ) {
     let mut payload = serde_json::json!({
         "method": method,
@@ -43,6 +45,12 @@ fn record_turn(
     });
     if !agent.is_empty() {
         payload["agent"] = serde_json::Value::String(agent.to_string());
+    }
+    if !parent.is_empty() {
+        payload["parent"] = serde_json::Value::String(parent.to_string());
+    }
+    if !run.is_empty() {
+        payload["run"] = serde_json::Value::String(run.to_string());
     }
     if streamed {
         payload["streamed"] = serde_json::Value::Bool(true);
@@ -70,6 +78,12 @@ fn record_turn(
         });
         if !agent.is_empty() {
             tc_payload["agent"] = serde_json::Value::String(agent.to_string());
+        }
+        if !parent.is_empty() {
+            tc_payload["parent"] = serde_json::Value::String(parent.to_string());
+        }
+        if !run.is_empty() {
+            tc_payload["run"] = serde_json::Value::String(run.to_string());
         }
         let tc_payload = tc_payload.to_string();
         let tc_summary = format!("tool_call {}", tc.name);
@@ -115,6 +129,15 @@ fn handle_ingest(
     let response_body = v["response_body"].as_str().unwrap_or("").to_string();
     let streamed = v["streamed"].as_bool().unwrap_or(false);
     let agent = v["agent"].as_str().unwrap_or("").to_string();
+    let mut parent = v["parent"].as_str().unwrap_or("").to_string();
+    let mut run = v["run"].as_str().unwrap_or("").to_string();
+    let agent = if agent.is_empty() { std::env::var("DASHCAM_AGENT_ID").unwrap_or_default() } else { agent };
+    if parent.is_empty() {
+        parent = std::env::var("DASHCAM_PARENT").unwrap_or_default();
+    }
+    if run.is_empty() {
+        run = std::env::var("DASHCAM_RUN").unwrap_or_default();
+    }
     record_turn(
         store,
         cfg,
@@ -126,6 +149,8 @@ fn handle_ingest(
         streamed,
         provider,
         &agent,
+        &parent,
+        &run,
     );
     Ok(format!("{{\"ok\":true,\"session\":{}}}", cfg.session))
 }
@@ -156,6 +181,8 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
         let mut x_goog_api_key = String::new();
         let mut anthropic_version = String::new();
         let mut agent = String::new();
+        let mut parent = String::new();
+        let mut run = String::new();
         for h in rq.headers() {
             let name = h.field.as_str().as_str();
             if name.eq_ignore_ascii_case("content-type") {
@@ -173,7 +200,22 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
             } else if name.eq_ignore_ascii_case("x-dashcam-agent") {
                 // multi-agent trace propagation: which agent produced this hop
                 agent = h.value.as_str().trim().to_string();
+            } else if name.eq_ignore_ascii_case("x-dashcam-parent") {
+                // spawn-tree attribution: the agent that spawned this one
+                parent = h.value.as_str().trim().to_string();
+            } else if name.eq_ignore_ascii_case("x-dashcam-run") {
+                // swarm grouping: every agent of one run shares this id
+                run = h.value.as_str().trim().to_string();
             }
+        }
+        if agent.is_empty() {
+            agent = std::env::var("DASHCAM_AGENT_ID").unwrap_or_default();
+        }
+        if parent.is_empty() {
+            parent = std::env::var("DASHCAM_PARENT").unwrap_or_default();
+        }
+        if run.is_empty() {
+            run = std::env::var("DASHCAM_RUN").unwrap_or_default();
         }
         // Machine door for language shims: a shim forwards an exchange it
         // already sent directly to the provider. Recorded through the same
@@ -252,6 +294,8 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         true,
                         &provider,
                         &agent,
+                        &parent,
+                        &run,
                     );
                 } else {
                     let mut resp_body = Vec::new();
@@ -267,6 +311,8 @@ pub fn serve(store: Arc<Store>, cfg: ProxyConfig, running: Arc<AtomicBool>) -> R
                         false,
                         &provider,
                         &agent,
+                        &parent,
+                        &run,
                     );
                     let response = tiny_http::Response::from_data(resp_body)
                         .with_status_code(status)

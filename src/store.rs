@@ -171,6 +171,24 @@ impl Store {
         Ok(out)
     }
 
+    /// Sessions whose events carry `"field":"value"` in their hop payload.
+    /// `field` is caller-whitelisted (agent or run).
+    pub fn sessions_with_tag(
+        &self,
+        field: &str,
+        value: &str,
+    ) -> rusqlite::Result<Vec<(i64, String, Option<String>, i64)>> {
+        let needle = format!("\"{field}\":\"{value}\"");
+        let mut out = Vec::new();
+        for (id, started, note, n) in self.sessions()? {
+            let has = self.events(id)?.iter().any(|e| e.payload.contains(&needle));
+            if has {
+                out.push((id, started, note, n));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn events(&self, session: i64) -> rusqlite::Result<Vec<Event>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(

@@ -59,12 +59,22 @@ impl Replay {
     pub fn render_current(&self) -> String {
         let e = self.current();
         let mut out = String::new();
+        let mut tags = String::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&e.payload) {
+            if let Some(a) = v.get("agent").and_then(|x| x.as_str()) {
+                tags.push_str(&format!(" [agent {a}]"));
+            }
+            if let Some(p) = v.get("parent").and_then(|x| x.as_str()) {
+                tags.push_str(&format!(" [parent {p}]"));
+            }
+        }
         out.push_str(&format!(
-            "hop {} of {} - {:?} - {}\n{}\n",
+            "hop {} of {} - {:?} - {}{}\n{}\n",
             e.seq,
             self.events.len(),
             e.kind,
             e.summary,
+            tags,
             e.ts
         ));
         if e.payload.len() > 2 && e.payload != "{}" {
