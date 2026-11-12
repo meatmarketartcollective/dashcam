@@ -11,7 +11,7 @@ fn seeded_store() -> (tempfile::TempDir, Arc<Store>, i64) {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("timeline.db");
     let store = Store::open(&db, Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")).unwrap();
-    let _s1 = store.new_session(Some("scripted agent")).unwrap();
+    let s1 = store.new_session(Some("scripted agent")).unwrap();
     store
         .append(
             s1,
@@ -41,7 +41,7 @@ fn seeded_store() -> (tempfile::TempDir, Arc<Store>, i64) {
 
 #[test]
 fn get_hop_returns_one_decrypted_hop_or_none() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let hop = store.get_hop(s1, 2).unwrap().expect("hop 2 exists");
     assert_eq!(hop.kind, EventKind::ToolCall);
     assert_eq!(hop.summary, "tool_call get_weather");
@@ -52,7 +52,7 @@ fn get_hop_returns_one_decrypted_hop_or_none() {
 
 #[test]
 fn get_diff_parses_a_file_diff_and_rejects_other_kinds() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let diff = store.get_diff(s1, 3).unwrap().expect("hop 3 is a diff");
     assert_eq!(diff["file"], "src/main.rs");
     assert_eq!(diff["added"].as_array().unwrap().len(), 2);
@@ -63,7 +63,7 @@ fn get_diff_parses_a_file_diff_and_rejects_other_kinds() {
 
 #[test]
 fn summarize_session_counts_kinds_tools_files_and_span() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let text = store.summarize_session(s1).unwrap().expect("summary");
     assert!(text.contains("\"scripted agent\""), "{text}");
     assert!(text.contains("3 hops"), "{text}");
@@ -169,7 +169,7 @@ fn call_tool(mcp: &Mcp, id: i64, name: &str, args: Value) -> Value {
 
 #[test]
 fn mcp_tool_calls_dispatch_to_the_store() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
 
     let sessions = call_tool(&mcp, 10, "list_sessions", json!({}));
@@ -206,7 +206,7 @@ fn mcp_tool_calls_dispatch_to_the_store() {
 
 #[test]
 fn mcp_tool_errors_are_reported_not_crashes() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
 
     // missing arguments
@@ -255,7 +255,7 @@ fn mcp_stdio_binary_end_to_end() {
     let db = dir.path().join("timeline.db");
     // seed the encrypted db and its key file exactly as dashcam leaves them
     let store = Store::open(&db, Some("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")).unwrap();
-    let _s1 = store.new_session(Some("mcp e2e")).unwrap();
+    let s1 = store.new_session(Some("mcp e2e")).unwrap();
     store
         .append(s1, EventKind::ModelTurn, "turn one", r#"{"request_body":{}}"#)
         .unwrap();
@@ -329,7 +329,7 @@ fn mcp_stdio_binary_end_to_end() {
 
 #[test]
 fn resources_list_names_every_session() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
     let resp = rpc(&mcp, r#"{"jsonrpc":"2.0","id":30,"method":"resources/list"}"#);
     let resources = resp["result"]["resources"].as_array().unwrap();
@@ -347,7 +347,7 @@ fn resources_list_names_every_session() {
 
 #[test]
 fn reading_a_session_resource_returns_the_summary() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
     let line = json!({
         "jsonrpc": "2.0",
@@ -366,7 +366,7 @@ fn reading_a_session_resource_returns_the_summary() {
 
 #[test]
 fn reading_a_hop_resource_returns_its_full_record() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
     let line = json!({
         "jsonrpc": "2.0",
@@ -423,7 +423,7 @@ fn notifications_owe_no_response() {
 
 #[test]
 fn malformed_requests_get_clean_errors_not_crashes() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = Mcp::new(store);
     let big = "x".repeat(1_000_000);
     let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
@@ -460,7 +460,7 @@ fn malformed_requests_get_clean_errors_not_crashes() {
 
 #[test]
 fn concurrent_readers_and_a_writer_do_not_deadlock() {
-    let (_dir, store, _s1) = seeded_store();
+    let (_dir, store, s1) = seeded_store();
     let mcp = std::sync::Arc::new(Mcp::new(store.clone()));
 
     // one writer keeps recording while readers hammer every surface
