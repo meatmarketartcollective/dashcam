@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -20,6 +21,9 @@ pub fn load_or_create(key_path: &Path) -> std::io::Result<String> {
     }
     let mut f = fs::File::create(key_path)?;
     f.write_all(hex.as_bytes())?;
-    f.set_permissions(fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    {
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     Ok(hex)
 }

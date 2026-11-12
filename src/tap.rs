@@ -287,6 +287,7 @@ fn run_pcap(store: Arc<Store>, cfg: TapConfig, path: &std::path::Path) -> Result
 }
 
 /// Live capture on a raw packet socket. Runs until the process is stopped.
+#[cfg(target_os = "linux")]
 fn run_live(store: Arc<Store>, cfg: TapConfig) -> Result<(), String> {
     let sock = unsafe {
         libc::socket(
@@ -418,4 +419,9 @@ mod tap_tests {
         assert!(!fin);
         let _ = ip_start;
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_live(_store: Arc<Store>, _cfg: TapConfig) -> Result<(), String> {
+    Err("live capture is Linux-only (raw packet sockets). Use --pcap for offline replay instead.".into())
 }

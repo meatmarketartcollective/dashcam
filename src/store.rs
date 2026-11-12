@@ -2,6 +2,7 @@ use crate::crypto;
 use crate::redact;
 use crate::event::{Event, EventKind};
 use rusqlite::Connection;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Mutex;
 
@@ -547,10 +548,11 @@ impl Store {
         // JSONL line, appended so repeated prunes accumulate
         if !doomed.is_empty() {
             if let Some(path) = &policy.export_path {
-                let file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .mode(0o600)
+                let mut opts = std::fs::OpenOptions::new();
+                opts.create(true).append(true);
+                #[cfg(unix)]
+                opts.mode(0o600);
+                let file = opts
                     .open(path)
                     .map_err(|e| format!("export {}: {e}", path.display()))?;
                 let mut out = std::io::BufWriter::new(file);
