@@ -11,7 +11,7 @@ fn seeded_store() -> (tempfile::TempDir, Arc<Store>, i64) {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("timeline.db");
     let store = Store::open(&db, Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")).unwrap();
-    let s1 = store.new_session(Some("scripted agent")).unwrap();
+    let _s1 = store.new_session(Some("scripted agent")).unwrap();
     store
         .append(
             s1,
@@ -255,7 +255,7 @@ fn mcp_stdio_binary_end_to_end() {
     let db = dir.path().join("timeline.db");
     // seed the encrypted db and its key file exactly as dashcam leaves them
     let store = Store::open(&db, Some("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899")).unwrap();
-    let s1 = store.new_session(Some("mcp e2e")).unwrap();
+    let _s1 = store.new_session(Some("mcp e2e")).unwrap();
     store
         .append(s1, EventKind::ModelTurn, "turn one", r#"{"request_body":{}}"#)
         .unwrap();
