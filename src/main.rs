@@ -6,6 +6,7 @@ use dashcam::web;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
 
@@ -549,14 +550,16 @@ fn main() {
         Command::Export { session, out } => {
             let store = open_store(&db_path);
             let result = match &out {
-                Some(path) => std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(path)
+                Some(path) => {
+                    let mut opts = std::fs::OpenOptions::new();
+                    opts.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    opts.mode(0o600);
+                    opts
+                        .open(path)
                     .map_err(|e| format!("{}: {e}", path.display()))
-                    .and_then(|mut f| store.export_session(session, &mut f)),
+                    .and_then(|mut f| store.export_session(session, &mut f))
+                },
                 None => store.export_session(session, &mut std::io::stdout()),
             };
             if let Err(e) = result {
