@@ -1,4 +1,5 @@
 use dashcam::capture;
+use dashcam::presets;
 use dashcam::key;
 use dashcam::store::{RetentionPolicy, Store};
 use dashcam::web;
@@ -28,9 +29,12 @@ enum Command {
         /// Local port to listen on (the harness points its API base URL here)
         #[arg(short, long, default_value = "8099")]
         port: u16,
-        /// Real provider base URL, e.g. https://api.openai.com
+        /// Real provider base URL, e.g. https://api.openai.com (overrides --provider)
         #[arg(short, long)]
-        upstream: String,
+        upstream: Option<String>,
+        /// Provider preset instead of a URL: openai, anthropic, google, nim, openrouter, ollama, ...
+        #[arg(long)]
+        provider: Option<String>,
         /// Human label for the session, e.g. the harness and task
         #[arg(short, long)]
         note: Option<String>,
@@ -55,6 +59,36 @@ enum Command {
         /// WebSocket upstream, e.g. wss://api.openai.com (pairs with --ws-port)
         #[arg(long)]
         ws_upstream: Option<String>,
+    },
+    /// Print shell export lines that point common harness env vars at the recorder
+    Env {
+        /// Local port the recorder listens on
+        #[arg(short, long, default_value = "8099")]
+        port: u16,
+        /// Provider preset the recorder runs against (sets DASHCAM_UPSTREAM)
+        #[arg(long)]
+        provider: Option<String>,
+        /// Real provider base URL, when not using a preset
+        #[arg(short, long)]
+        upstream: Option<String>,
+    },
+    /// Run a command with the recorder env set, recorder started and stopped for you
+    Wrap {
+        /// Local port the recorder listens on
+        #[arg(short, long, default_value = "8099")]
+        port: u16,
+        /// Provider preset: openai, anthropic, google, nim, openrouter, ollama, ...
+        #[arg(long)]
+        provider: Option<String>,
+        /// Real provider base URL, when not using a preset
+        #[arg(short, long)]
+        upstream: Option<String>,
+        /// Human label for the session (defaults to the command name)
+        #[arg(short, long)]
+        note: Option<String>,
+        /// Command to run, after --
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
     },
     /// Record network metadata: which providers get called, and when
     Tap {
@@ -181,7 +215,11 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
-        Command::Record { port, upstream, note, max_events, max_age_days, max_size, export, rules, ws_port, ws_upstream } => {
+        Command::Record { port, upstream, provider, note, max_events, max_age_days, max_size, export, rules, ws_port, ws_upstream } => {
+            let upstream = match presets::resolve(upstream.as_deref(), provider.as_deref()) {
+                Ok(b) => b,
+                Err(e) => { eprintln!("{e}"); std::process::exit(2); }
+            };
             let store = Arc::new(open_store(&db_path));
             let id = store.new_session(note.as_deref()).expect("create session");
             println!("session {id} recording on http://127.0.0.1:{port} -> {upstream}");
@@ -200,7 +238,7 @@ fn main() {
                 None => dashcam::redact::Redactor::builtin(),
             };
             if let Some(ws_port) = ws_port {
-                let ws_upstream = ws_upstream.unwrap_or_else(|| upstream.clone());
+                let ws_upstream = ws_upstream.unwrap_or_else(|| presets::ws_of(&upstream));
                 println!("websocket passthrough on ws://127.0.0.1:{ws_port} -> {ws_upstream}");
                 let ws_store = Arc::clone(&store);
                 let ws_running = Arc::clone(&running);
@@ -239,6 +277,50 @@ fn main() {
                 eprintln!("capture stopped: {e}");
                 std::process::exit(1);
             }
+        }
+        Command::Env { port, provider, upstream } => {
+            let base = match presets::resolve(upstream.as_deref(), provider.as_deref()) {
+                Ok(b) => b,
+                Err(e) => { eprintln!("{e}"); std::process::exit(2); }
+            };
+            for line in presets::env_lines(port, &base) {
+                println!("{line}");
+            }
+        }
+        Command::Wrap { port, provider, upstream, note, command } => {
+            let base = match presets::resolve(upstream.as_deref(), provider.as_deref()) {
+                Ok(b) => b,
+                Err(e) => { eprintln!("{e}"); std::process::exit(2); }
+            };
+            let exe = std::env::current_exe().expect("locate dashcam binary");
+            let port_arg = port.to_string();
+            let note = note.unwrap_or_else(|| command[0].clone());
+            let mut recorder = std::process::Command::new(&exe)
+                .args(["record", "--port", &port_arg, "--upstream", &base, "--note", &note])
+                .spawn()
+                .expect("start dashcam record");
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            if let Ok(Some(status)) = recorder.try_wait() {
+                eprintln!("recorder failed to start (exit {})", status.code().unwrap_or(-1));
+                std::process::exit(2);
+            }
+            let mut child = match std::process::Command::new(&command[0])
+                .args(&command[1..])
+                .envs(presets::env_pairs(port, &base))
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("failed to start {}: {e}", command[0]);
+                    let _ = recorder.kill();
+                    let _ = recorder.wait();
+                    std::process::exit(2);
+                }
+            };
+            let status = child.wait().expect("wait for command");
+            let _ = recorder.kill();
+            let _ = recorder.wait();
+            std::process::exit(status.code().unwrap_or(1));
         }
         Command::Tap { live, pcap, note, max_events, max_age_days, max_size, export } => {
             let store = Arc::new(open_store(&db_path));
