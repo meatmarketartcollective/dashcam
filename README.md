@@ -1,141 +1,34 @@
-# dashcam
+# mayday
 
-A vendor-neutral local flight recorder for AI agent sessions. dashcam sits
-beside any agent harness and passively records what the agent actually did:
-the model API boundary, the tool calls, the file changes. Then it replays any
-session hop by hop, showing the state at each step, so a run that went wrong
-can be understood after the fact.
+A local flight recorder for agent sessions.
 
-Nothing leaves the machine. The timeline is an encrypted SQLite database
-(AES-256-GCM, app-managed key, no user credentials), the proxy and the
-viewer bind to 127.0.0.1 only, and secrets are redacted before anything is
-written. Headers are never recorded at all.
+Agent frameworks are huge and their issue trackers are drowning, and underneath
+most reports is the same complaint: an agent did something wrong and nobody can
+say what it actually saw, decided, or did. Mayday is a local daemon that sits
+beside any agent session and records every tool call, prompt, file diff and
+model turn into one queryable timeline, then replays a failed run step by step
+with the state at each hop.
 
-## Quick start
+Vendor-neutral by design: it records whatever harness you point it at.
 
-Record a session by pointing the harness's API base URL at the proxy:
+## Design
 
-    dashcam record --upstream https://api.openai.com --note "my agent, task X"
+- Capture happens at three boundaries, none of which require touching the
+  agent's code:
+  1. the model API boundary (a localhost proxy that copies requests and
+     responses as they pass),
+  2. tool execution (hook/wrapper shims that emit a record per call),
+  3. the working tree (file diffs between turns).
+- Storage is a single SQLite database, one row per event, sessions as the top
+  grouping. Fully local; no phone-home.
+- The replay UI walks a session turn by turn and answers one question:
+  why did it do that.
 
-The proxy forwards to the real provider, records both directions as one hop
-per turn, and derives tool-call hops from the responses. Streaming
-(text/event-stream) responses pass through chunk by chunk and still land as
-one complete hop.
+## Status
 
-Read the timeline:
+MVP scaffold. The timeline store (SQLite, sessions + events) and CLI surface
+exist and are tested; capture transports and the replay UI are next.
 
-    dashcam timeline                      # sessions and hop counts
-    dashcam replay --session 1            # every hop, oldest first
-    dashcam replay --session 1 --interactive   # step through, state at each hop
-    dashcam serve --port 8098             # browse in a local web page
+## License
 
-Record file changes at the file boundary:
-
-    dashcam diff src/main.rs --session 1
-
-### Provider presets and the env wrapper
-
-Skip the URL. Name the provider and dashcam fills in the base:
-
-    dashcam record --provider anthropic --port 8099
-
-`--upstream` still wins when both are given, so a mirror or gateway keeps
-working. `dashcam env` prints the shell exports that point the common harness
-env vars at the recorder, and `dashcam wrap` starts the recorder, runs a
-command with those exports set, and tears the recorder down when the command
-exits:
-
-    eval "$(dashcam env --port 8099)"          # or
-    dashcam wrap --provider openai -- python agent.py
-
-Every agent the harness spawns inherits those base URLs, so a swarm lands in
-the same timeline without touching agent code. An agent that never touches the
-recorder still shows up in the network tap, as SNI-level metadata only.
-
-### Swarm attribution
-
-A swarm is many agents hitting one recorder. Identity is opt-in per hop: a
-harness that stamps `X-Dashcam-Agent` (and optionally `X-Dashcam-Parent` and
-`X-Dashcam-Run`) gets it recorded on every hop. Agents that only inherit the
-environment can set `DASHCAM_AGENT_ID`, `DASHCAM_PARENT` and `DASHCAM_RUN`
-instead; the recorder falls back to those when the headers are absent. The
-WebSocket passthrough reads the same three headers on the upgrade request.
-
-Filter the timeline to one agent or one run:
-
-    dashcam timeline --agent researcher
-    dashcam timeline --run 2026-11-11-batch
-
-Replay marks each hop with its agent and parent, so one session reads as the
-spawn tree it was.
-
-## How it keeps itself safe
-
-- **Redaction always on.** Token-shaped secrets (sk-, Bearer, nvapi-) are
-  scrubbed at write time. Extra rules with `--rules file` add to the
-  built-ins; they never weaken them.
-- **Headers are never stored**, so API keys have nowhere to land.
-- **Retention.** `--max-events` (count), `--max-age-days` (age),
-  `--max-size` (stored bytes). Oldest go first, and emptied sessions go
-  with them.
-- **Export before aging out.** `--export file` makes retention append every
-  aged-out hop to that file as readable JSONL first; `dashcam export
-  --session 1` does the same for a whole session on demand.
-
-## Scan it from an agent
-
-`dashcam mcp` speaks the Model Context Protocol on stdio, read-only, local
-only. Point an MCP client at the binary and it can list sessions, walk
-hops, search the timeline, pull any hop or file diff, and summarize a
-session: list_sessions, list_hops, search_timeline, get_hop, get_diff,
-summarize_session. It also speaks resources: one resource per session
-(`dashcam://session/1` reads back that session's summary, and
-`dashcam://session/1/hops/2` reads back one hop's full record), so an agent
-can browse the timeline instead of only tool-calling.
-
-## Multi-agent traces
-
-A harness that stamps an `X-Dashcam-Agent` header on its API calls gets that
-identity recorded on every hop, so one timeline can show which agent did
-what.
-
-## Build
-
-    cargo build && cargo test
-
-Rust, no runtime dependencies beyond SQLite (bundled). See
-docs/architecture.md for the design.
-
-## WebSocket passthrough (realtime and voice agents)
-
-Some agents never speak request-response HTTP; they hold a WebSocket open
-(OpenAI Realtime, Gemini Live, and similar). Run a second port beside the
-proxy:
-
-    dashcam record --port 8099 --upstream https://api.openai.com \
-        --ws-port 8098 --ws-upstream wss://api.openai.com
-
-Point the harness's WebSocket client at ws://127.0.0.1:8098 and dashcam
-terminates the connection, records every frame in both directions with
-timestamps, and forwards over its own secure connection to the provider.
-Auth headers are forwarded upstream and never recorded. One model_turn hop
-is written per connection: transport "websocket", the ordered `frames`
-transcript, plus the first text frame each way as request_body and
-response_body. Frames over 32 MiB are refused, a session stops recording
-past 8 MiB, fragmented messages keep their framing, and an idle session is
-cut at 10 minutes. The wss:// path uses the standard webpki roots; it is
-compile-checked and unit-tested but has not been driven against a live
-provider yet.
-
-## Network metadata tap (optional, off by default)
-
-    dashcam tap --pcap capture.pcap --note why
-    dashcam tap --live   # needs root or CAP_NET_RAW
-
-Records which providers got called, and when: the TLS SNI hostname (read
-without any decryption; no payloads, no man-in-the-middle, no root
-certificates), bytes in and out per connection, and a flow-end hop with the
-totals. Written as network_hop hops. A ClientHello must arrive inside the
-first 16 KiB of a connection (virtually always true); on a locked-down
-machine, capture offline with `tcpdump -i any -w file.pcap` and replay it
-here.
+MIT

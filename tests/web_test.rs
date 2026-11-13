@@ -1,6 +1,6 @@
-use dashcam::event::EventKind;
-use dashcam::store::Store;
-use dashcam::web;
+use mayday::event::EventKind;
+use mayday::store::Store;
+use mayday::web;
 
 const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 

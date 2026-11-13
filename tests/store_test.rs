@@ -1,5 +1,5 @@
-use dashcam::event::EventKind;
-use dashcam::store::{RetentionPolicy, Store};
+use mayday::event::EventKind;
+use mayday::store::{RetentionPolicy, Store};
 
 const K1: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const K2: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
@@ -72,7 +72,7 @@ fn prune_keeps_the_newest_events_and_drops_emptied_sessions() {
     }
 
     let (events_removed, sessions_removed) =
-        store.prune(&RetentionPolicy { max_events: Some(2), max_age_days: None, ..Default::default() }).unwrap();
+        store.prune(&RetentionPolicy { max_events: Some(2), max_age_days: None }).unwrap();
     assert_eq!(events_removed, 3);
     assert_eq!(sessions_removed, 1);
 
@@ -91,7 +91,7 @@ fn prune_with_no_limit_touches_nothing() {
     let s = store.new_session(Some("run")).unwrap();
     store.append(s, EventKind::Prompt, "hop", "{}").unwrap();
     let (events_removed, sessions_removed) =
-        store.prune(&RetentionPolicy { max_events: None, max_age_days: None, ..Default::default() }).unwrap();
+        store.prune(&RetentionPolicy { max_events: None, max_age_days: None }).unwrap();
     assert_eq!((events_removed, sessions_removed), (0, 0));
     assert_eq!(store.events(s).unwrap().len(), 1);
 }

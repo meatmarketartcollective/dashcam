@@ -62,7 +62,7 @@ fn record_binary_captures_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("timeline.db");
 
-    // Spawn `dashcam record` on a fresh port; occasionally a just-dropped
+    // Spawn `mayday record` on a fresh port; occasionally a just-dropped
     // ephemeral port is refused on rebind, so retry with a new port.
     let mut child_opt: Option<std::process::Child> = None;
     let mut port = 0u16;
@@ -71,7 +71,7 @@ fn record_binary_captures_end_to_end() {
         let p = listener.local_addr().unwrap().port();
         drop(listener);
         port = p;
-        let mut c = Command::new(env!("CARGO_BIN_EXE_dashcam"))
+        let mut c = Command::new(env!("CARGO_BIN_EXE_mayday"))
             .args([
                 "--db", db.to_str().unwrap(),
                 "record",
@@ -82,7 +82,7 @@ fn record_binary_captures_end_to_end() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn dashcam record");
+            .expect("spawn mayday record");
         let stdout = c.stdout.take().unwrap();
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -109,10 +109,10 @@ fn record_binary_captures_end_to_end() {
         let _ = c.kill();
         let _ = c.wait();
         if attempt == 4 {
-            panic!("dashcam record never announced readiness after 5 attempts; last stdout: {seen:?}; stderr: {err}");
+            panic!("mayday record never announced readiness after 5 attempts; last stdout: {seen:?}; stderr: {err}");
         }
     }
-    let mut child = child_opt.expect("dashcam record spawned");
+    let mut child = child_opt.expect("mayday record spawned");
 
     // the harness points its API base URL at the proxy; on a loaded box the
     // first few connections can fail while the listener settles
@@ -137,13 +137,13 @@ fn record_binary_captures_end_to_end() {
 
     // reopen with the key file the binary generated
     let key_hex = std::fs::read_to_string(dir.path().join("key")).unwrap();
-    let store = dashcam::store::Store::open(&db, Some(key_hex.trim())).unwrap();
+    let store = mayday::store::Store::open(&db, Some(key_hex.trim())).unwrap();
     let sessions = store.sessions().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].2.as_deref(), Some("scripted agent"));
     let events = store.events(1).unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, dashcam::event::EventKind::ModelTurn);
+    assert_eq!(events[0].kind, mayday::event::EventKind::ModelTurn);
     assert!(events[0].payload.contains("scripted-agent-ping"));
     // the db on disk holds no readable text
     let bytes = std::fs::read(&db).unwrap();

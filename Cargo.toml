@@ -1,11 +1,9 @@
 [package]
-name = "dashcam"
+name = "mayday"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "A local flight recorder for agent sessions: every tool call, prompt, diff and model turn, in one queryable timeline."
-
-repository = "https://gitlab.com/Aloysiusvonf.ck/dashcam"
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -17,11 +15,6 @@ tiny_http = "0.12"
 ureq = "2"
 aes-gcm = "0.10"
 base64 = "0.22"
-sha1 = "0.10"
-rustls = "0.23"
-webpki-roots = "0.26"
-libc = "0.2"
-regex = "1"
 
 [dev-dependencies]
 tempfile = "3"
