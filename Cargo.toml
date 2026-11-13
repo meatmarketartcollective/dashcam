@@ -1,6 +1,6 @@
 [package]
 name = "dashcam"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "A local flight recorder for agent sessions: every tool call, prompt, diff and model turn, in one queryable timeline."
