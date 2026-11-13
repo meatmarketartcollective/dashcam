@@ -139,3 +139,7 @@ totals. Written as network_hop hops. A ClientHello must arrive inside the
 first 16 KiB of a connection (virtually always true); on a locked-down
 machine, capture offline with `tcpdump -i any -w file.pcap` and replay it
 here.
+
+## Platform builds
+
+Release binaries for Windows x64, macOS (Intel and Apple Silicon), and Linux x86_64 are attached to each tag's release on the dashboard, with a SHA256SUMS.txt to check them. The SNI metadata tap is Linux-only (raw sockets); everywhere else it prints a clean note and everything else, the proxy, viewer, timeline, and replay, works the same, including `--pcap` for offline replay.
