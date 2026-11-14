@@ -162,6 +162,15 @@ enum Command {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Sum token usage recorded on model_turn hops (optionally priced from a CSV)
+    Costs {
+        /// Limit to one session id (default: all sessions)
+        #[arg(long)]
+        session: Option<i64>,
+        /// Optional CSV: model,in_per_mtok,out_per_mtok, dollars per million tokens
+        #[arg(long)]
+        prices: Option<PathBuf>,
+    },
     /// Serve the scan tools over the MCP stdio protocol (read-only)
     Mcp,
     /// Print every event of one session, oldest first
@@ -545,6 +554,65 @@ fn main() {
             };
             for (id, started, note, events) in sessions {
                 println!("{id}\t{started}\t{events}\t{}", note.unwrap_or_default());
+            }
+        }
+        Command::Costs { session, prices } => {
+            let store = open_store(&db_path);
+            let price_rows = match &prices {
+                Some(p) => match std::fs::read_to_string(p) {
+                    Ok(text) => dashcam::usage::parse_prices(&text),
+                    Err(e) => { eprintln!("prices: {e}"); std::process::exit(2); }
+                },
+                None => Vec::new(),
+            };
+            let sessions: Vec<i64> = match session {
+                Some(id) => vec![id],
+                None => store.sessions().expect("list sessions").into_iter().map(|(id, _, _, _)| id).collect(),
+            };
+            let mut total_prompt: u64 = 0;
+            let mut total_completion: u64 = 0;
+            let mut total_cost = 0.0f64;
+            let mut any = false;
+            for sid in sessions {
+                let events = match store.events(sid) { Ok(e) => e, Err(_) => continue };
+                let mut agg: std::collections::BTreeMap<String, (u64, u64, u64)> = std::collections::BTreeMap::new();
+                for ev in events {
+                    if ev.kind != dashcam::event::EventKind::ModelTurn { continue; }
+                    let Ok(p) = serde_json::from_str::<serde_json::Value>(&ev.payload) else { continue };
+                    let Some(u) = p.get("usage") else { continue };
+                    let model = u.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                    if model.is_empty() { continue; }
+                    let pt = u.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let ct = u.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let e = agg.entry(model.clone()).or_insert((0, 0, 0));
+                    e.0 += 1;
+                    e.1 += pt;
+                    e.2 += ct;
+                }
+                if agg.is_empty() { continue; }
+                println!("session {sid}");
+                for (model, (turns, pt, ct)) in agg {
+                    any = true;
+                    total_prompt += pt;
+                    total_completion += ct;
+                    match dashcam::usage::price_of(&price_rows, &model) {
+                        Some((pin, pout)) => {
+                            let cost = pt as f64 / 1e6 * pin + ct as f64 / 1e6 * pout;
+                            total_cost += cost;
+                            println!("  {model}\t{turns} turns\t{pt} in\t{ct} out\t${cost:.4}");
+                        }
+                        None => println!("  {model}\t{turns} turns\t{pt} in\t{ct} out\t(no price)"),
+                    }
+                }
+            }
+            if any {
+                if price_rows.is_empty() {
+                    println!("total\t{total_prompt} in\t{total_completion} out\t(pass --prices model,in,out for dollar estimates)");
+                } else {
+                    println!("total\t{total_prompt} in\t{total_completion} out\t${total_cost:.4}");
+                }
+            } else {
+                println!("no token usage recorded on model_turn hops yet");
             }
         }
         Command::Export { session, out } => {

@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod presets;
+pub mod usage;
 pub mod compare;
 pub mod derive;
 pub mod redact;

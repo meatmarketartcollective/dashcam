@@ -55,6 +55,13 @@ fn record_turn(
     if streamed {
         payload["streamed"] = serde_json::Value::Bool(true);
     }
+    if let Some(u) = crate::usage::usage_from_response(provider, request_body, response_body, streamed) {
+        payload["usage"] = serde_json::json!({
+            "model": u.model,
+            "prompt_tokens": u.prompt_tokens,
+            "completion_tokens": u.completion_tokens,
+        });
+    }
     let payload = payload.to_string();
     let summary = if streamed {
         format!("{method} /{path} -> {status} (streamed)")
