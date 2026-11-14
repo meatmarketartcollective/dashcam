@@ -25,6 +25,7 @@ one complete hop.
 Read the timeline:
 
     dashcam timeline                      # sessions and hop counts
+    dashcam costs                         # token usage per model (pass --prices for dollars)
     dashcam replay --session 1            # every hop, oldest first
     dashcam replay --session 1 --interactive   # step through, state at each hop
     dashcam serve --port 8098             # browse in a local web page
