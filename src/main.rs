@@ -208,7 +208,18 @@ enum Command {
         #[arg(short = 'b')]
         b: i64,
     },
+    /// Browse the timeline in a terminal UI
+    Tui {
+        /// Path to the timeline database (default: ~/.dashcam/timeline.db)
+        #[arg(long)]
+        db: Option<std::path::PathBuf>,
+        /// Prices CSV (model,in,out; dollars per 1M tokens) for dollar costs
+        #[arg(long)]
+        prices: Option<String>,
+    },
 }
+
+mod tui;
 
 fn default_db() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
@@ -232,6 +243,21 @@ fn main() {
     let db_path = cli.db.unwrap_or_else(default_db);
 
     match cli.command {
+        Command::Tui { db, prices } => {
+            let db_path = db.unwrap_or_else(default_db);
+            let prices_text = match prices {
+                Some(p) => match std::fs::read_to_string(&p) {
+                    Ok(t) => Some(t),
+                    Err(e) => { eprintln!("prices: {e}"); std::process::exit(2); }
+                },
+                None => std::env::var("DASHCAM_PRICES").ok().and_then(|p| std::fs::read_to_string(p).ok()),
+            };
+            let price_rows = prices_text.map(|t| dashcam::usage::parse_prices(&t)).unwrap_or_default();
+            if let Err(e) = tui::run(db_path, price_rows) {
+                eprintln!("tui: {e}");
+                std::process::exit(2);
+            }
+        }
         Command::Record { port, upstream, provider, note, max_events, max_age_days, max_size, export, rules, ws_port, ws_upstream } => {
             let upstream = match presets::resolve(upstream.as_deref(), provider.as_deref()) {
                 Ok(b) => b,
