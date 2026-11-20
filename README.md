@@ -28,6 +28,11 @@ Read the timeline:
     dashcam costs                         # token usage per model (pass --prices for dollars)
     dashcam replay --session 1            # every hop, oldest first
     dashcam replay --session 1 --interactive   # step through, state at each hop
+    dashcam tui                           # the timeline in a terminal UI
+
+Or open the timeline as a terminal UI:
+
+![the dashcam timeline viewer](docs/tui.png)
     dashcam serve --port 8098             # browse in a local web page
 
 Record file changes at the file boundary:
